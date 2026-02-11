@@ -4,6 +4,7 @@ Supports both DINOv3 and ResNet18 detectors
 """
 
 import streamlit as st
+from pathlib import Path
 import tempfile
 import os
 
@@ -24,8 +25,8 @@ detector_type = st.sidebar.selectbox(
     "Select Detector",
     options=["dinov3", "resnet18"],
     format_func=lambda x: {
-        "dinov3": "🧠 DINOv3 (Your Model - 0.88 AUROC)",
-        "resnet18": "🎯 ResNet18 (Friend's Model - Pretrained)"
+        "dinov3": "🧠 DINOv3 (ViT-B/16 - 0.88 AUROC)",
+        "resnet18": "🎯 ResNet18 (CNN - Pretrained)"
     }[x],
     help="Switch between different detection backends"
 )
@@ -73,7 +74,9 @@ if detector_type == "dinov3":
 def load_detector(det_type: str, weights: str = None):
     """Load detector with caching."""
     import sys
-    sys.path.insert(0, '/Users/drdeathwish/.openclaw/workspace/DeepFakeGuard/src')
+    src_path = Path(__file__).resolve().parents[1] / "src"
+    if str(src_path) not in sys.path:
+        sys.path.insert(0, str(src_path))
     
     from deepfake_guard import DeepfakeGuard
     
@@ -239,7 +242,7 @@ else:
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("🧠 DINOv3 Detector (Your Model)")
+        st.subheader("🧠 DINOv3 Detector (ViT-B/16)")
         st.markdown("""
         **Best for:** High-accuracy detection
         
@@ -253,7 +256,7 @@ else:
         """)
     
     with col2:
-        st.subheader("🎯 ResNet18 Detector (Friend's Model)")
+        st.subheader("🎯 ResNet18 Detector (CNN)")
         st.markdown("""
         **Best for:** Quick analysis, no face dependency
         

@@ -5,8 +5,8 @@ A multimodal Python library for deepfake detection with **multiple detector back
 ## 🆕 New in v0.2.0 - Multi-Detector Support
 
 Now supports multiple detection backends:
-- **🧠 DINOv3** (Your model) - Face-based detection with 0.88+ AUROC
-- **🎯 ResNet18** (Friend's model) - Full-frame detection, lightweight
+- **🧠 DINOv3** (ViT-B/16) - Face-based detection with 0.88+ AUROC
+- **🎯 ResNet18** (CNN) - Full-frame detection, lightweight
 
 Switch between detectors at runtime via API, GUI, or Python API!
 
@@ -63,7 +63,7 @@ guard = DeepfakeGuard(detector_type="dinov3", weights_path="weights/dinov3_best_
 # Detect
 result = guard.detect_video("video.mp4")
 
-# Switch to friend's detector at runtime
+# Switch to the ResNet18 detector at runtime
 guard.set_detector("resnet18")
 
 # Detect with ResNet18
@@ -95,7 +95,7 @@ streamlit run ui/enhanced_gui.py
 
 ## 🧠 Detector Comparison
 
-| Feature | DINOv3 (Your Model) | ResNet18 (Friend's Model) |
+| Feature | DINOv3 (ViT-B/16) | ResNet18 (CNN) |
 |---------|---------------------|---------------------------|
 | **Architecture** | Vision Transformer (ViT-B/16) | CNN (ResNet18) |
 | **Face Detection** | ✅ MTCNN face cropping | ❌ Full frame analysis |
@@ -114,11 +114,11 @@ DeepFakeGuard/
 ├── src/deepfake_guard/
 │   ├── core.py                  # Main orchestrator with detector switching
 │   ├── models/
-│   │   ├── dinov3/              # Your DINOv3 detector
+│   │   ├── dinov3/              # DINOv3 detector
 │   │   │   ├── detector.py
 │   │   │   ├── frame_encoder.py
 │   │   │   └── classifier_head.py
-│   │   └── resnet18/            # Friend's ResNet18 detector (NEW)
+│   │   └── resnet18/            # ResNet18 detector (NEW)
 │   │       ├── detector.py
 │   │       └── __init__.py
 │   └── utils/                   # Shared utilities
@@ -142,7 +142,7 @@ To add a new detector (e.g., Audio):
 
 def detect_audio_deepfake(video_path: str) -> Dict[str, Any]:
     # Extract audio
-    # Run your model
+    # Run your detector
     return {
         "score": 0.65,
         "label": "FAKE",
@@ -225,11 +225,5 @@ guard.set_detector("resnet18")
 MIT License
 
 ---
-
-## 🤝 Contributors
-
-- **You** - DINOv3 detector implementation
-- **Emmanuel Davidsons (Dazz0h)** - ResNet18 detector implementation
-- **OpenClaw Team** - Toolkit integration
 
 **Star this repository if you find it useful!**

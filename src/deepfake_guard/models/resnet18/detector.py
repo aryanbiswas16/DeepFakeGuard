@@ -1,5 +1,5 @@
 """
-ResNet18-based video detector (Friend's implementation - DeMamba style)
+ResNet18-based video detector (pretrained ImageNet weights)
 Simple frame-level classification without face cropping
 """
 
@@ -15,7 +15,7 @@ import torch.nn as nn
 from timm import create_model
 from torchvision import transforms
 
-from ...core import ModalityResult
+from ...types import ModalityResult
 
 
 class ResNet18Detector(nn.Module):

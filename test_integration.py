@@ -4,8 +4,13 @@ Test script for DeepfakeGuard multi-detector support
 Shows how to use both DINOv3 and ResNet18 detectors
 """
 
+from pathlib import Path
 import sys
-sys.path.insert(0, '/Users/drdeathwish/.openclaw/workspace/DeepFakeGuard/src')
+
+project_root = Path(__file__).resolve().parent
+src_path = project_root / "src"
+if str(src_path) not in sys.path:
+    sys.path.insert(0, str(src_path))
 
 def test_detectors():
     print("=" * 60)
@@ -66,8 +71,7 @@ def test_detectors():
     
     # Test 4: Show file structure
     print("\n4. File structure created:")
-    import os
-    base = "/Users/drdeathwish/.openclaw/workspace/DeepFakeGuard/src/deepfake_guard"
+    base = src_path / "deepfake_guard"
     
     files = [
         "models/dinov3/detector.py",
@@ -79,8 +83,8 @@ def test_detectors():
     ]
     
     for f in files:
-        path = os.path.join(base, f)
-        exists = "✅" if os.path.exists(path) else "❌"
+        path = base / f
+        exists = "✅" if path.exists() else "❌"
         print(f"   {exists} {f}")
     
     print("\n" + "=" * 60)
@@ -92,7 +96,7 @@ def test_detectors():
     print("  3. Or run API: python -m uvicorn app.main:app --reload")
     print("\nTo revert changes:")
     print("  git checkout main")
-    print("  git branch -D integrate-friend-detector")
+    print("  git branch -D <feature-branch>")
 
 if __name__ == "__main__":
     test_detectors()

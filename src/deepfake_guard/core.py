@@ -1,24 +1,17 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Literal
 
 import torch
 
 from .models.dinov3.detector import Detector as DINOv3Detector
 from .models.resnet18.detector import ResNet18Detector, detect_video_resnet18
+from .types import ModalityResult
 from .utils.face_crop import FaceCropper
 from .utils.preprocess import simulate_compression, stack_frames
 from .utils.video_io import read_video_frames
 from .utils.weights import load_weights
-
-
-@dataclass(frozen=True)
-class ModalityResult:
-    score: float
-    label: str
-    details: Dict[str, Any]
 
 
 DetectorFn = Callable[[str], Dict[str, Any]]
@@ -29,8 +22,8 @@ class DeepfakeGuard:
     Orchestrates multimodal deepfake detection pipelines.
     
     Supports multiple detector backends:
-    - "dinov3": Your DINOv3-based detector (face cropping, 0.88+ AUROC)
-    - "resnet18": Friend's ResNet18 detector (full frames, pretrained)
+    - "dinov3": DINOv3-based detector (face cropping, 0.88+ AUROC)
+    - "resnet18": ResNet18-based detector (full frames, pretrained)
     """
 
     def __init__(
@@ -79,7 +72,7 @@ class DeepfakeGuard:
             self.load_visual_weights(weights_path)
 
     def _init_resnet18(self) -> None:
-        """Initialize ResNet18-based detector (friend's implementation)."""
+        """Initialize ResNet18-based detector (pretrained ImageNet weights)."""
         self.resnet_detector = ResNet18Detector(device=self.device)
         # Note: Uses pretrained ImageNet weights, no custom weights to load
         self.visual_weights_loaded = True

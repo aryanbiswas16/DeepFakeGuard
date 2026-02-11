@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, Query
 from fastapi.responses import JSONResponse
+from pathlib import Path
 import shutil
 import tempfile
 import os
@@ -19,7 +20,9 @@ def get_guard(detector_type: str = "dinov3"):
     global _guard, _current_detector
     
     import sys
-    sys.path.insert(0, '/Users/drdeathwish/.openclaw/workspace/DeepFakeGuard/src')
+    src_path = Path(__file__).resolve().parents[1] / "src"
+    if str(src_path) not in sys.path:
+        sys.path.insert(0, str(src_path))
     
     from deepfake_guard import DeepfakeGuard
     
