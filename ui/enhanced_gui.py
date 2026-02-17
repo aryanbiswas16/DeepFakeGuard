@@ -1,6 +1,6 @@
 """
 Enhanced Deepfake Guard GUI with detector toggle
-Supports both DINOv3 and ResNet18 detectors
+Supports DINOv3, ResNet18, and IvyFake detectors
 """
 
 import streamlit as st
@@ -23,10 +23,11 @@ st.sidebar.header("⚙️ Detector Settings")
 
 detector_type = st.sidebar.selectbox(
     "Select Detector",
-    options=["dinov3", "resnet18"],
+    options=["dinov3", "resnet18", "ivyfake"],
     format_func=lambda x: {
         "dinov3": "🧠 DINOv3 (ViT-B/16 - 0.88 AUROC)",
-        "resnet18": "🎯 ResNet18 (CNN - Pretrained)"
+        "resnet18": "🎯 ResNet18 (CNN - Pretrained)",
+        "ivyfake": "🌿 IvyFake (CLIP - Explainable)"
     }[x],
     help="Switch between different detection backends"
 )
@@ -37,14 +38,30 @@ detector_info = {
         "description": "Face-based detection with DINOv3 ViT-B/16",
         "features": ["Face cropping (MTCNN)", "768-dim embeddings", "LayerNorm tuning", "0.88+ AUROC"],
         "pros": "Higher accuracy, trained on deepfakes",
-        "cons": "Requires face detection, slower"
+        "cons": "Requires face detection, slower",
+        "requires_weights": True
     },
     "resnet18": {
         "name": "ResNet18 CNN",
         "description": "Full-frame detection with ResNet18",
         "features": ["Full frame analysis", "No face cropping", "Lightweight", "Pretrained on ImageNet"],
         "pros": "Faster, no face dependency",
-        "cons": "Lower accuracy (not fine-tuned)"
+        "cons": "Lower accuracy (not fine-tuned)",
+        "requires_weights": False
+    },
+    "ivyfake": {
+        "name": "IvyFake CLIP Detector",
+        "description": "CLIP-based explainable AIGC detection",
+        "features": [
+            "CLIP ViT-B/32 backbone",
+            "Temporal artifact analysis",
+            "Spatial artifact analysis",
+            "Explainable outputs",
+            "No face cropping required"
+        ],
+        "pros": "Explainable, artifact detection, pretrained",
+        "cons": "First run downloads CLIP model",
+        "requires_weights": False
     }
 }
 
@@ -201,6 +218,16 @@ if uploaded_file is not None:
                                     frame_count = len(frame_count)
                                 st.caption(f"Frames analyzed: {frame_count}")
                                 
+                                # Show features for IvyFake
+                                features = details.get("features", [])
+                                if features:
+                                    st.caption(f"Analysis: {', '.join(features)}")
+                                
+                                # Show backbone info
+                                backbone = details.get("backbone")
+                                if backbone:
+                                    st.caption(f"Backbone: {backbone}")
+                                
                                 # Show instability if available
                                 instability = details.get("instability")
                                 if instability is not None:
@@ -239,36 +266,51 @@ else:
     
     st.divider()
     
-    col1, col2 = st.columns(2)
+    # Show all 3 detector options
+    col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.subheader("🧠 DINOv3 Detector (ViT-B/16)")
+        st.subheader("🧠 DINOv3")
         st.markdown("""
         **Best for:** High-accuracy detection
         
-        **How it works:**
-        1. Detects and crops faces from video
-        2. Analyzes facial features with DINOv3
-        3. Detects subtle artifacts in deepfakes
+        **Features:**
+        - Face cropping (MTCNN)
+        - 768-dim embeddings
+        - LayerNorm tuning
+        - 0.88+ AUROC
         
-        **Requires:** Trained weights file
-        **Accuracy:** 0.88+ AUROC
+        **Requires:** Trained weights
         """)
     
     with col2:
-        st.subheader("🎯 ResNet18 Detector (CNN)")
+        st.subheader("🎯 ResNet18")
         st.markdown("""
-        **Best for:** Quick analysis, no face dependency
+        **Best for:** Quick analysis
         
-        **How it works:**
-        1. Samples frames uniformly from video
-        2. Analyzes full frames with ResNet18
-        3. Uses pretrained ImageNet features
+        **Features:**
+        - Full frame analysis
+        - No face cropping
+        - Lightweight
+        - ImageNet pretrained
         
-        **Requires:** No weights (pretrained)
-        **Accuracy:** Baseline (not fine-tuned)
+        **Requires:** No weights
+        """)
+    
+    with col3:
+        st.subheader("🌿 IvyFake")
+        st.markdown("""
+        **Best for:** Explainable detection
+        
+        **Features:**
+        - CLIP ViT-B/32
+        - Temporal artifacts
+        - Spatial artifacts
+        - Explainable outputs
+        
+        **Requires:** No weights
         """)
 
 # Footer
 st.divider()
-st.caption("Deepfake Guard v0.2.0 | Multi-detector support enabled")
+st.caption("Deepfake Guard v0.3.0 | Multi-detector support: DINOv3, ResNet18, IvyFake")

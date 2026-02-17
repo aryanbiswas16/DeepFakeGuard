@@ -5,7 +5,7 @@ import shutil
 import tempfile
 import os
 
-app = FastAPI(title="Deepfake Guard API", version="0.2.0")
+app = FastAPI(title="Deepfake Guard API", version="0.3.0")
 
 # Configuration
 DEFAULT_DETECTOR = os.environ.get("DEEPFAKE_GUARD_DETECTOR", "dinov3")
@@ -42,14 +42,14 @@ def get_guard(detector_type: str = "dinov3"):
 @app.post("/detect")
 async def detect_endpoint(
     file: UploadFile = File(...),
-    detector: str = Query(default="dinov3", enum=["dinov3", "resnet18"], description="Detector backend to use")
+    detector: str = Query(default="dinov3", enum=["dinov3", "resnet18", "ivyfake"], description="Detector backend to use")
 ):
     """
     Detect deepfakes in an uploaded video file.
     
     Args:
         file: Video file to analyze
-        detector: Detector backend ("dinov3" or "resnet18")
+        detector: Detector backend ("dinov3", "resnet18", or "ivyfake")
     
     Returns:
         Detection results with score, label, and detailed analysis
@@ -84,13 +84,14 @@ def read_root():
     
     return {
         "status": "DeepfakeGuard API is running",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "current_detector": _current_detector or DEFAULT_DETECTOR,
-        "available_detectors": ["dinov3", "resnet18"],
+        "available_detectors": ["dinov3", "resnet18", "ivyfake"],
         "endpoints": {
-            "detect": "POST /detect?detector=dinov3|resnet18",
+            "detect": "POST /detect?detector=dinov3|resnet18|ivyfake",
             "health": "GET /",
-            "switch_detector": "GET /switch/{detector_type}"
+            "switch_detector": "GET /switch/{detector_type}",
+            "list_detectors": "GET /detectors"
         }
     }
 
@@ -100,17 +101,17 @@ def switch_detector(detector_type: str):
     Switch the active detector backend.
     
     Args:
-        detector_type: "dinov3" or "resnet18"
+        detector_type: "dinov3", "resnet18", or "ivyfake"
     
     Returns:
         Status of the switch operation
     """
     global _guard, _current_detector
     
-    if detector_type not in ["dinov3", "resnet18"]:
+    if detector_type not in ["dinov3", "resnet18", "ivyfake"]:
         return JSONResponse(
             status_code=400,
-            content={"error": f"Invalid detector_type. Must be 'dinov3' or 'resnet18'"}
+            content={"error": f"Invalid detector_type. Must be 'dinov3', 'resnet18', or 'ivyfake'"}
         )
     
     try:
@@ -139,13 +140,28 @@ def list_detectors():
                 "name": "DINOv3 Vision Transformer",
                 "description": "Face-based detection with DINOv3 ViT-B/16",
                 "requires_weights": True,
-                "features": ["Face cropping", "768-dim embeddings", "LayerNorm tuning"]
+                "features": ["Face cropping", "768-dim embeddings", "LayerNorm tuning"],
+                "best_for": "High accuracy deepfake detection"
             },
             "resnet18": {
                 "name": "ResNet18 CNN",
                 "description": "Full-frame detection with ResNet18",
                 "requires_weights": False,
-                "features": ["Full frame analysis", "No face cropping", "Lightweight"]
+                "features": ["Full frame analysis", "No face cropping", "Lightweight"],
+                "best_for": "Quick analysis without face dependency"
+            },
+            "ivyfake": {
+                "name": "IvyFake CLIP Detector",
+                "description": "CLIP-based explainable AIGC detection with temporal/spatial analysis",
+                "requires_weights": False,
+                "features": [
+                    "CLIP ViT-B/32 backbone",
+                    "Temporal artifact analysis",
+                    "Spatial artifact analysis",
+                    "Explainable outputs",
+                    "No face cropping required"
+                ],
+                "best_for": "Explainable detection with artifact analysis"
             }
         }
     }
