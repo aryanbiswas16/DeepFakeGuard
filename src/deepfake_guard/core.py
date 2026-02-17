@@ -7,6 +7,7 @@ import torch
 
 from .models.dinov3.detector import Detector as DINOv3Detector
 from .models.resnet18.detector import ResNet18Detector, detect_video_resnet18
+from .models.ivyfake.detector import IvyFakeDetector
 from .types import ModalityResult
 from .utils.face_crop import FaceCropper
 from .utils.preprocess import simulate_compression, stack_frames
@@ -23,14 +24,15 @@ class DeepfakeGuard:
     
     Supports multiple detector backends:
     - "dinov3": DINOv3-based detector (face cropping, 0.88+ AUROC)
-    - "resnet18": ResNet18-based detector (full frames, pretrained)
+    - "resnet18": ResNet18-based detector (full frames, pretrained ImageNet)
+    - "ivyfake": IvyFake detector (CLIP-based with temporal/spatial analysis)
     """
 
     def __init__(
         self,
         weights_path: Optional[str] = None,
         device: Optional[str] = None,
-        detector_type: Literal["dinov3", "resnet18"] = "dinov3"
+        detector_type: Literal["dinov3", "resnet18", "ivyfake"] = "dinov3"
     ):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.detector_type = detector_type
@@ -43,12 +45,15 @@ class DeepfakeGuard:
         self.visual_detector = None
         self.face_cropper = None
         self.resnet_detector = None
+        self.ivyfake_detector = None
         self.visual_weights_loaded = False
 
         if detector_type == "dinov3":
             self._init_dinov3(weights_path)
         elif detector_type == "resnet18":
             self._init_resnet18()
+        elif detector_type == "ivyfake":
+            self._init_ivyfake()
         else:
             raise ValueError(f"Unknown detector_type: {detector_type}")
 
@@ -78,12 +83,19 @@ class DeepfakeGuard:
         self.visual_weights_loaded = True
         print("ResNet18 detector initialized (pretrained ImageNet weights)")
 
-    def set_detector(self, detector_type: Literal["dinov3", "resnet18"], weights_path: Optional[str] = None) -> None:
+    def _init_ivyfake(self) -> None:
+        """Initialize IvyFake detector (CLIP-based with explainable features)."""
+        self.ivyfake_detector = IvyFakeDetector(device=self.device)
+        # Uses pretrained CLIP weights, no custom weights to load
+        self.visual_weights_loaded = True
+        print("IvyFake detector initialized (CLIP-ViT-B/32 backbone)")
+
+    def set_detector(self, detector_type: Literal["dinov3", "resnet18", "ivyfake"], weights_path: Optional[str] = None) -> None:
         """
         Switch detector backend.
         
         Args:
-            detector_type: "dinov3" or "resnet18"
+            detector_type: "dinov3", "resnet18", or "ivyfake"
             weights_path: Path to DINOv3 weights (only used for dinov3)
         """
         if detector_type == self.detector_type:
@@ -97,11 +109,20 @@ class DeepfakeGuard:
         self._pipelines.clear()
         self._model_info.clear()
         
+        # Reset detectors
+        self.visual_detector = None
+        self.face_cropper = None
+        self.resnet_detector = None
+        self.ivyfake_detector = None
+        self.visual_weights_loaded = False
+        
         # Reinitialize
         if detector_type == "dinov3":
             self._init_dinov3(weights_path)
         elif detector_type == "resnet18":
             self._init_resnet18()
+        elif detector_type == "ivyfake":
+            self._init_ivyfake()
             
         # Re-register visual modality
         self.register_modality(
@@ -133,7 +154,7 @@ class DeepfakeGuard:
         """Run the full detection pipeline on a video file."""
         result: Dict[str, Any] = {
             "model_info": {
-                "version": "1.1.0",
+                "version": "1.2.0",
                 "detector_type": self.detector_type,
                 **self._model_info
             },
@@ -177,6 +198,8 @@ class DeepfakeGuard:
             return self._run_dinov3_analysis(video_path)
         elif self.detector_type == "resnet18":
             return self._run_resnet18_analysis(video_path)
+        elif self.detector_type == "ivyfake":
+            return self._run_ivyfake_analysis(video_path)
         else:
             return {"error": f"Unknown detector type: {self.detector_type}"}
 
@@ -219,6 +242,15 @@ class DeepfakeGuard:
     def _run_resnet18_analysis(self, video_path: str) -> Dict[str, Any]:
         """ResNet18-based visual analysis (full frames, no face cropping)."""
         result = self.resnet_detector.predict_video(video_path)
+        return ModalityResult(
+            score=result["score"],
+            label=result["label"],
+            details=result["details"]
+        ).__dict__
+
+    def _run_ivyfake_analysis(self, video_path: str) -> Dict[str, Any]:
+        """IvyFake-based visual analysis (CLIP-based with temporal/spatial features)."""
+        result = self.ivyfake_detector.predict_video(video_path)
         return ModalityResult(
             score=result["score"],
             label=result["label"],
