@@ -20,7 +20,7 @@ from ...types import ModalityResult
 class TemporalArtifactAnalyzer(nn.Module):
     """Analyzes temporal inconsistencies in video frames."""
     
-    def __init__(self, embed_dim: int = 512):
+    def __init__(self, embed_dim: int = 768):
         super().__init__()
         self.temporal_conv = nn.Sequential(
             nn.Conv1d(embed_dim, embed_dim, kernel_size=3, padding=1),
@@ -54,7 +54,7 @@ class TemporalArtifactAnalyzer(nn.Module):
 class SpatialArtifactAnalyzer(nn.Module):
     """Analyzes spatial artifacts in individual frames."""
     
-    def __init__(self, embed_dim: int = 512):
+    def __init__(self, embed_dim: int = 768):
         super().__init__()
         self.spatial_attention = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
@@ -81,12 +81,12 @@ class IvyXDetector(nn.Module):
     Unified explainable AIGC detector for images and videos.
     Based on vision-language architecture with CLIP backbone.
     """
-    
+
     def __init__(
         self,
         model_name: str = "openai/clip-vit-base-patch32",
         num_classes: int = 2,
-        embed_dim: int = 512,
+        embed_dim: int = 768,
         freeze_backbone: bool = True,
         device: str = "cpu"
     ):
