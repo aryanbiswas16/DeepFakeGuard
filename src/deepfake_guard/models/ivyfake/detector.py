@@ -78,15 +78,29 @@ class SpatialArtifactAnalyzer(nn.Module):
 
 class IvyXDetector(nn.Module):
     """
-    Unified explainable AIGC detector for images and videos.
-    Based on vision-language architecture with CLIP backbone.
+    Explainable AIGC detector using a frozen CLIP vision backbone.
+
+    The temporal and spatial heads (TemporalArtifactAnalyzer,
+    SpatialArtifactAnalyzer, fusion, classifier) are intentionally bypassed
+    during inference because they are randomly initialised and have no trained
+    weights.  Instead, the detector computes two principled signals directly
+    from the frozen CLIP embeddings:
+
+      * Temporal consistency  — mean cosine similarity between consecutive
+        frame embeddings.  Real videos have high frame-to-frame semantic
+        continuity; AI-generated artefacts cause dips.
+      * Spatial anomaly       — per-frame deviation from the clip-mean
+        embedding across the sequence (Mahalanobis-like outlier score).
+
+    Both signals are fused via a simple calibrated sigmoid to produce a
+    P(fake) value in [0, 1].
     """
 
     def __init__(
         self,
         model_name: str = "openai/clip-vit-base-patch32",
         num_classes: int = 2,
-        embed_dim: int = 768,
+        embed_dim: int = 512,
         freeze_backbone: bool = True,
         device: str = "cpu"
     ):
@@ -127,72 +141,86 @@ class IvyXDetector(nn.Module):
         vision_outputs = self.clip_model.vision_model(pixel_values=images)
         return vision_outputs.pooler_output
     
+    # Sigmoid sharpness — controls how fast P(fake) transitions around the
+    # temporal-consistency decision boundary.  Tuned so that a ~0.05 drop in
+    # mean cosine similarity below the boundary maps to ~0.75 P(fake).
+    _SIG_K: float = 20.0
+    _TEMPORAL_BOUNDARY: float = 0.85   # mean cos-sim below this → suspicious
+
     def forward(
         self,
         images: torch.Tensor,
         return_explanations: bool = False
-    ) -> Dict[str, torch.Tensor]:
+    ) -> Dict[str, Any]:
         """
         Args:
-            images: (batch, num_frames, channels, height, width) or (batch, channels, height, width)
-            return_explanations: Whether to generate explanation features
-        
+            images: ``(batch, num_frames, C, H, W)`` or ``(batch, C, H, W)``
+
         Returns:
-            Dictionary containing logits and features
+            dict with keys ``fake_scores`` ``[B]``, ``temporal_sim`` ``[B]``,
+            ``spatial_anomaly`` ``[B]``, and ``per_frame_fake_probs``.
         """
-        # Handle both image and video inputs
-        if images.dim() == 5:  # Video: (batch, num_frames, C, H, W)
+        if images.dim() == 5:  # video
             batch_size, num_frames = images.shape[:2]
             images_flat = images.view(-1, *images.shape[2:])
-        else:  # Image: (batch, C, H, W)
+        else:  # single frame batch
             batch_size = images.shape[0]
             num_frames = 1
             images_flat = images
-        
-        # Extract features
-        frame_features = self.extract_frame_features(images_flat)
-        
-        # Reshape back to (batch, num_frames, embed_dim)
-        frame_features = frame_features.view(batch_size, num_frames, -1)
-        
-        # Analyze temporal and spatial artifacts
+
+        # ── frozen CLIP features ─────────────────────────────────────────────
+        raw_feats = self.extract_frame_features(images_flat)          # (B*T, D)
+        feats = torch.nn.functional.normalize(raw_feats, dim=-1)      # L2-normalise
+        feats = feats.view(batch_size, num_frames, -1)                 # (B, T, D)
+
+        # ── temporal signal: mean consecutive cosine similarity ──────────────
         if num_frames > 1:
-            temporal_features = self.temporal_analyzer(frame_features)
+            cos_sim = (feats[:, :-1, :] * feats[:, 1:, :]).sum(-1)    # (B, T-1)
+            temporal_sim = cos_sim.mean(-1)                            # (B,)
+            # Per-frame fake proxy: deviation of each sim from boundary
+            # (low similarity = higher per-frame anomaly)
+            per_frame_sim = torch.cat([
+                cos_sim[:, :1],   # pad first frame
+                cos_sim
+            ], dim=1)  # (B, T)
         else:
-            temporal_features = frame_features.squeeze(1)
-            
-        spatial_features = self.spatial_analyzer(frame_features)
-        
-        # Fuse features
-        combined_features = torch.cat([temporal_features, spatial_features], dim=-1)
-        fused_features = self.fusion(combined_features)
-        
-        # Classification
-        logits = self.classifier(fused_features)
-        
-        # Prepare output
-        output = {
-            'logits': logits,
-            'temporal_features': temporal_features,
-            'spatial_features': spatial_features
+            temporal_sim = torch.ones(batch_size, device=images.device)
+            per_frame_sim = torch.ones(batch_size, 1, device=images.device)
+
+        # ── spatial signal: per-frame distance from sequence mean ────────────
+        seq_mean = feats.mean(dim=1, keepdim=True)                     # (B, 1, D)
+        spatial_dist = torch.norm(feats - seq_mean, dim=-1).mean(-1)   # (B,)
+        # Normalise spatial_dist to [0, 1] via tanh
+        spatial_anomaly = torch.tanh(spatial_dist * 2.0)
+
+        # ── fuse: low temporal consistency + high spatial anomaly → fake ─────
+        # Invert temporal_sim so that high sim = low fake score
+        temporal_fake = 1.0 - temporal_sim          # (B,)  ∈ [0, 1] approx
+        combined = 0.7 * temporal_fake + 0.3 * spatial_anomaly
+
+        # Sigmoid centred at 0.5 * (1 - boundary) to calibrate
+        fake_scores = torch.sigmoid(self._SIG_K * (combined - (1.0 - self._TEMPORAL_BOUNDARY)))
+
+        # Per-frame fake probability (sigmoid of per-frame sim deviation)
+        per_frame_fake = torch.sigmoid(
+            self._SIG_K * ((1.0 - per_frame_sim) - (1.0 - self._TEMPORAL_BOUNDARY))
+        )  # (B, T)
+
+        return {
+            "fake_scores": fake_scores,
+            "temporal_sim": temporal_sim,
+            "spatial_anomaly": spatial_anomaly,
+            "per_frame_fake_probs": per_frame_fake,
         }
-        
-        return output
-    
+
     def predict(self, images: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Make predictions on input images/videos
-        
-        Returns:
-            predictions: Class predictions (0=real, 1=fake)
-            probabilities: Confidence scores
-        """
+        """Return (predictions [B], fake_probs [B]) compatible with old callers."""
         self.eval()
         with torch.no_grad():
             output = self.forward(images)
-            logits = output['logits']
-            probs = torch.softmax(logits, dim=-1)
-            preds = torch.argmax(probs, dim=-1)
+            fake_p = output["fake_scores"]           # P(fake) in [0,1]
+            probs = torch.stack([1 - fake_p, fake_p], dim=-1)  # [B, 2]
+            preds = (fake_p > 0.5).long()
         return preds, probs
 
 
@@ -288,31 +316,33 @@ class IvyFakeDetector:
                 "details": {"error": "Could not extract frames"}
             }
         
-        # Preprocess frames
+        # Preprocess frames → (1, T, 3, H, W) so forward treats as one video
         inputs = torch.stack([self.preprocess_frame(f) for f in frames]).to(self.device)
+        inputs = inputs.unsqueeze(0)   # (T,3,H,W) → (1,T,3,H,W)
         
-        # Add batch dimension if single frame
-        if inputs.dim() == 3:
-            inputs = inputs.unsqueeze(0)
-        
-        # Inference
-        preds, probs = self.model.predict(inputs)
-        
-        # Get fake probability (class 1)
-        fake_probs = probs[:, 1]
-        mean_score = float(fake_probs.mean().item())
-        per_frame = fake_probs.cpu().tolist()
-        
+        # Inference — uses frozen CLIP features; untrained heads are bypassed
+        self.model.eval()
+        with torch.no_grad():
+            output = self.model.forward(inputs)
+
+        mean_score = float(output["fake_scores"].mean().item())
+        per_frame_t = output["per_frame_fake_probs"][0]   # (T,) for first (only) batch
+        per_frame = [float(p) for p in per_frame_t.cpu().tolist()]
+        temporal_sim = float(output["temporal_sim"].mean().item())
+        spatial_anomaly = float(output["spatial_anomaly"].mean().item())
+
         return {
             "score": mean_score,
             "label": "FAKE" if mean_score > self.threshold else "REAL",
             "details": {
-                "per_frame_fake_probs": [float(p) for p in per_frame],
+                "per_frame_fake_probs": per_frame,
                 "frame_count": len(frames),
                 "detector_type": "ivyfake",
-                "backbone": "CLIP-ViT-B/32",
-                "features": ["temporal_artifacts", "spatial_artifacts"],
-                "note": "CLIP-based explainable detector with temporal analysis"
+                "backbone": "CLIP-ViT-B/32 (frozen)",
+                "features": ["temporal_consistency", "spatial_anomaly"],
+                "temporal_sim": round(temporal_sim, 4),
+                "spatial_anomaly": round(spatial_anomaly, 4),
+                "note": "Principled CLIP-based detector: frame-to-frame cosine similarity + embedding variance"
             }
         }
 

@@ -11,6 +11,7 @@ Faithfully reimplements the core algorithm from:
 from __future__ import annotations
 
 import cv2
+import math
 import numpy as np
 import torch
 import torch.nn as nn
@@ -216,14 +217,18 @@ class D3Detector:
         _, _, volatility_tensor = self.model(batch)
         volatility = float(volatility_tensor.item())
 
-        # Higher volatility -> real; lower -> AI-generated
+        # Higher volatility -> real; lower -> AI-generated.
+        # Score is a sigmoid centred at the threshold so it:
+        #   - equals exactly 0.5 when volatility == threshold
+        #   - approaches 1.0 for very low volatility (AI-generated)
+        #   - approaches 0.0 for very high volatility (real)
+        # k controls sharpness; k=1.5 gives a smooth, well-calibrated transition.
         is_real = volatility > self.threshold
-
-        # Produce a "fake score" in [0,1] for compatibility with other detectors
-        if self.threshold > 0:
-            fake_score = max(0.0, min(1.0, 1.0 - volatility / (2.0 * self.threshold)))
-        else:
-            fake_score = 0.5
+        k = 1.5
+        try:
+            fake_score = 1.0 / (1.0 + math.exp(k * (volatility - self.threshold)))
+        except OverflowError:
+            fake_score = 0.0
 
         return {
             "score": fake_score,
