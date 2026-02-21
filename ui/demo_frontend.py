@@ -11,11 +11,12 @@ API_URL = st.text_input("API URL", "http://localhost:8000")
 # Detector selection
 detector = st.selectbox(
     "Select Detector",
-    options=["dinov3", "resnet18", "ivyfake"],
+    options=["dinov3", "resnet18", "ivyfake", "d3"],
     format_func=lambda x: {
-        "dinov3": "🧠 DINOv3 (ViT-B/16 - High Accuracy)",
-        "resnet18": "🎯 ResNet18 (CNN - Fast)",
-        "ivyfake": "🌿 IvyFake (CLIP - Explainable)"
+        "dinov3": "\U0001f9e0 DINOv3 (ViT-B/16 - High Accuracy)",
+        "resnet18": "\U0001f3af ResNet18 (CNN - Fast)",
+        "ivyfake": "\U0001f33f IvyFake (CLIP - Explainable)",
+        "d3": "\U0001f4ca D3 (Training-Free - Temporal)"
     }[x],
     help="Choose the detection backend"
 )
@@ -24,7 +25,8 @@ detector = st.selectbox(
 info_text = {
     "dinov3": "Face-based detection with DINOv3. Requires trained weights. Best accuracy (0.88+ AUROC).",
     "resnet18": "Full-frame detection with ResNet18. Uses pretrained ImageNet weights. Fast but less accurate.",
-    "ivyfake": "CLIP-based detection with temporal and spatial artifact analysis. Explainable outputs, no weights needed."
+    "ivyfake": "CLIP-based detection with temporal and spatial artifact analysis. Explainable outputs, no weights needed.",
+    "d3": "Training-free detection using second-order temporal features (ICCV 2025). Analyzes motion volatility."
 }
 st.caption(f"**{detector.upper()}:** {info_text[detector]}")
 

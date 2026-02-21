@@ -237,13 +237,9 @@ if uploaded_file is not None:
                                 label = res.get("label", "UNKNOWN")
                                 
                                 if label == "FAKE":
-                                    st.error(f"**{label}**
-
-Score: {score:.3f}")
+                                    st.error(f"**{label}**\n\nScore: {score:.3f}")
                                 else:
-                                    st.success(f"**{label}**
-
-Score: {score:.3f}")
+                                    st.success(f"**{label}**\n\nScore: {score:.3f}")
                             
                             with cols[1]:
                                 details = res.get("details", {})

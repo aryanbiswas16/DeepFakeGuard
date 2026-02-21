@@ -46,6 +46,7 @@ dev = [
 ui = [
     "streamlit>=1.25.0",
     "requests>=2.31.0"
+]
 api = [
     "fastapi>=0.100.0",
     "uvicorn>=0.23.0",
@@ -60,9 +61,9 @@ all = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/aryanbiswas16/DeepfakeVidDetection"
-Repository = "https://github.com/aryanbiswas16/DeepfakeVidDetection"
-Documentation = "https://github.com/aryanbiswas16/DeepfakeVidDetection#readme"
+Homepage = "https://github.com/aryanbiswas16/DeepFakeGuard"
+Repository = "https://github.com/aryanbiswas16/DeepFakeGuard"
+Documentation = "https://github.com/aryanbiswas16/DeepFakeGuard#readme"
 
 [tool.setuptools.packages.find]
 where = ["src"]

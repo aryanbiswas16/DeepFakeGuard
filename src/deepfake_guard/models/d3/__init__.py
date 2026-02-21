@@ -1,5 +1,5 @@
-"""D3: Detection by Difference of Differences - Training-free AI video detector."""
+"""D3: Detection by Difference of Differences — Training-free AI video detector (ICCV 2025)."""
 
-from .detector import D3Detector, create_d3_detector
+from .detector import D3Detector, D3Model, create_d3_detector
 
-__all__ = ["D3Detector", "create_d3_detector"]
+__all__ = ["D3Detector", "D3Model", "create_d3_detector"]

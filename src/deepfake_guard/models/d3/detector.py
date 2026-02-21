@@ -1,236 +1,230 @@
 """
-D3 Detector - Detection by Difference of Differences
+D3 Detector — Detection by Difference of Differences
 Training-free AI-generated video detection using second-order temporal features.
 
-Based on: "D3: Training-Free AI-Generated Video Detection Using Second-Order Features"
-ICCV 2025 - Zheng et al.
+Faithfully reimplements the core algorithm from:
+  "D3: Training-Free AI-Generated Video Detection Using Second-Order Features"
+  Zheng et al., ICCV 2025  —  https://arxiv.org/abs/2508.00701
+  Reference repo: https://github.com/eitanzur/D3
 """
 
+from __future__ import annotations
+
+import cv2
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
-from typing import Dict, Any, Optional, List
-import cv2
-from pathlib import Path
+from typing import Any, Dict, List
+
+# Encoder names whose HuggingFace output is a dataclass (not a plain tensor).
+_TRANSFORMER_ENCODERS = {
+    "clip-16", "clip-32", "xclip-16", "xclip-32", "dino-base", "dino-large",
+}
 
 
-class D3FeatureExtractor:
-    """Extract second-order temporal features from video frames."""
-    
-    def __init__(self, encoder_name: str = "xclip-16", device: str = "cpu"):
+class D3Model(nn.Module):
+    """
+    Core D3 model: encoder -> 1st-order distances -> 2nd-order diffs -> volatility.
+    Mirrors ``models/D3_model.py`` from the reference implementation.
+    """
+
+    def __init__(
+        self,
+        encoder_type: str = "xclip-16",
+        loss_type: str = "l2",
+        device: str = "cpu",
+    ):
+        super().__init__()
+        self.encoder_type = encoder_type.lower()
+        self.loss_type = loss_type
         self.device = device
-        self.encoder_name = encoder_name
-        self.encoder = self._load_encoder(encoder_name)
+        self.encoder = self._build_encoder(self.encoder_type)
         self.encoder.eval()
-        
-    def _load_encoder(self, encoder_name: str):
-        """Load pre-trained encoder model."""
-        encoder_name = encoder_name.lower()
-        
-        if "xclip" in encoder_name:
+        self.to(device)
+
+    # ------------------------------------------------------------------
+    # Encoder factory (matches original D3_model.py encoder options)
+    # ------------------------------------------------------------------
+    def _build_encoder(self, name: str) -> nn.Module:
+        if name == "clip-16":
+            from transformers import CLIPVisionModel
+            return CLIPVisionModel.from_pretrained("openai/clip-vit-base-patch16")
+
+        if name == "clip-32":
+            from transformers import CLIPVisionModel
+            return CLIPVisionModel.from_pretrained("openai/clip-vit-base-patch32")
+
+        if name == "xclip-16":
             try:
-                from transformers import CLIPModel, CLIPProcessor
-                model = CLIPModel.from_pretrained("openai/clip-vit-base-patch16")
-                # Use vision encoder only
-                return model.vision_model.to(self.device)
-            except:
-                # Fallback to ViT
-                import timm
-                model = timm.create_model("vit_base_patch16_clip_224", pretrained=True, num_classes=0)
-                return model.to(self.device)
-                
-        elif "resnet" in encoder_name:
-            from torchvision.models import resnet18, ResNet18_Weights
-            model = resnet18(weights=ResNet18_Weights.DEFAULT)
-            model.fc = nn.Identity()  # Remove classifier
-            return model.to(self.device)
-            
-        elif "mobilenet" in encoder_name:
-            from torchvision.models import mobilenet_v3_small, MobileNet_V3_Small_Weights
-            model = mobilenet_v3_small(weights=MobileNet_V3_Small_Weights.DEFAULT)
-            model.classifier = nn.Identity()
-            return model.to(self.device)
-            
-        else:
-            # Default to CLIP ViT
+                from transformers import XCLIPVisionModel
+                return XCLIPVisionModel.from_pretrained("microsoft/xclip-base-patch16")
+            except Exception:
+                from transformers import CLIPVisionModel
+                return CLIPVisionModel.from_pretrained("openai/clip-vit-base-patch16")
+
+        if name == "xclip-32":
+            try:
+                from transformers import XCLIPVisionModel
+                return XCLIPVisionModel.from_pretrained("microsoft/xclip-base-patch32")
+            except Exception:
+                from transformers import CLIPVisionModel
+                return CLIPVisionModel.from_pretrained("openai/clip-vit-base-patch32")
+
+        if name == "dino-base":
+            from transformers import AutoModel
+            return AutoModel.from_pretrained("facebook/dinov2-base")
+
+        if name == "dino-large":
+            from transformers import AutoModel
+            return AutoModel.from_pretrained("facebook/dinov2-large")
+
+        if name == "resnet-18":
+            import torchvision.models as models
+            resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+            modules = list(resnet.children())[:-1]  # strip FC layer
+            return nn.Sequential(*modules)
+
+        if name == "mobilenet-v3":
             import timm
-            model = timm.create_model("vit_base_patch16_clip_224", pretrained=True, num_classes=0)
-            return model.to(self.device)
-    
+            mob = timm.create_model("mobilenetv3_large_100", pretrained=True)
+            modules = list(mob.children())[:-1]
+            return nn.Sequential(*modules)
+
+        raise ValueError(
+            f"Unknown encoder: {name}. "
+            "Choose from: clip-16, clip-32, xclip-16, xclip-32, "
+            "dino-base, dino-large, resnet-18, mobilenet-v3"
+        )
+
+    # ------------------------------------------------------------------
+    # Forward pass — mirrors original D3_model.forward exactly
+    # ------------------------------------------------------------------
     @torch.no_grad()
-    def extract_features(self, frames: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor):
         """
-        Extract features from frames.
         Args:
-            frames: [T, C, H, W] tensor
+            x: ``(batch, num_frames, 3, H, W)``
         Returns:
-            features: [T, D] tensor
+            ``(features, dis_2nd_avg, dis_2nd_std)``
         """
-        frames = frames.to(self.device)
-        features = []
-        
-        # Process in batches to avoid OOM
-        batch_size = 32
-        for i in range(0, len(frames), batch_size):
-            batch = frames[i:i+batch_size]
-            feat = self.encoder(batch)
-            features.append(feat.cpu())
-        
-        return torch.cat(features, dim=0)  # [T, D]
-    
-    def compute_first_order_diff(self, features: torch.Tensor) -> torch.Tensor:
-        """
-        Compute first-order differences (temporal gradients).
-        Args:
-            features: [T, D]
-        Returns:
-            first_diff: [T-1, D]
-        """
-        return features[1:] - features[:-1]  # [T-1, D]
-    
-    def compute_second_order_diff(self, first_diff: torch.Tensor) -> torch.Tensor:
-        """
-        Compute second-order differences (difference of differences).
-        Args:
-            first_diff: [T-1, D]
-        Returns:
-            second_diff: [T-2, D]
-        """
-        return first_diff[1:] - first_diff[:-1]  # [T-2, D]
-    
-    def compute_volatility(self, features: torch.Tensor) -> float:
-        """
-        Compute volatility score from second-order differences.
-        Higher volatility = more natural/real video.
-        Lower volatility = more AI-generated.
-        
-        Args:
-            features: [T, D] extracted features
-        Returns:
-            volatility: scalar score
-        """
-        if len(features) < 3:
-            return 0.0
-        
-        # First-order differences
-        first_diff = self.compute_first_order_diff(features)  # [T-1, D]
-        
-        # Second-order differences (D3 core)
-        second_diff = self.compute_second_order_diff(first_diff)  # [T-2, D]
-        
-        # Compute L2 norm of second-order differences
-        second_diff_norm = torch.norm(second_diff, p=2, dim=1)  # [T-2]
-        
-        # Volatility = mean of second-order differences
-        volatility = second_diff_norm.mean().item()
-        
-        return volatility
+        b, t, c, h, w = x.shape
+        images = x.reshape(-1, c, h, w)  # (B*T, 3, H, W)
+
+        if self.encoder_type in _TRANSFORMER_ENCODERS:
+            out = self.encoder(images, output_hidden_states=True)
+            features = out.pooler_output  # (B*T, D)
+        else:
+            features = self.encoder(images)  # (B*T, D, ...)
+            features = features.reshape(features.size(0), -1)  # flatten spatial
+
+        features = features.reshape(b, t, -1)  # (B, T, D)
+
+        # 1st-order: scalar distance between consecutive frame features
+        vec1 = features[:, :-1, :]  # (B, T-1, D)
+        vec2 = features[:, 1:, :]   # (B, T-1, D)
+
+        if self.loss_type == "cos":
+            dis_1st = F.cosine_similarity(vec1, vec2, dim=-1)  # (B, T-1)
+        else:  # l2
+            dis_1st = torch.norm(vec1 - vec2, p=2, dim=-1)     # (B, T-1)
+
+        # 2nd-order: difference of consecutive 1st-order distances
+        dis_2nd = dis_1st[:, 1:] - dis_1st[:, :-1]  # (B, T-2)
+
+        dis_2nd_avg = torch.mean(dis_2nd, dim=1)  # (B,)
+        dis_2nd_std = torch.std(dis_2nd, dim=1)    # (B,)  — **this is the volatility**
+
+        return features, dis_2nd_avg, dis_2nd_std
 
 
 class D3Detector:
     """
-    D3: Detection by Difference of Differences
-    Training-free AI-generated video detector.
+    High-level wrapper: extract frames -> D3Model -> result dict.
+    Compatible with the DeepfakeGuard pipeline.
     """
-    
-    def __init__(self, 
-                 encoder_name: str = "xclip-16",
-                 threshold: float = 0.5,
-                 device: str = "cpu",
-                 calibrate: bool = False):
-        """
-        Initialize D3 detector.
-        
-        Args:
-            encoder_name: Encoder to use (xclip-16, xclip-32, resnet-18, mobilenet-v3)
-            threshold: Threshold for real vs fake (calibrated per encoder)
-            device: Device to run on
-            calibrate: Whether to auto-calibrate threshold
-        """
+
+    # Default threshold from the reference Streamlit app (app.py)
+    DEFAULT_THRESHOLD = 2.5
+
+    def __init__(
+        self,
+        encoder_name: str = "xclip-16",
+        loss_type: str = "l2",
+        threshold: float | None = None,
+        device: str = "cpu",
+    ):
         self.device = device
-        self.encoder_name = encoder_name
-        self.calibrate = calibrate
-        
-        # Default thresholds per encoder (from paper/empirical)
-        self.default_thresholds = {
-            "xclip-16": 0.15,
-            "xclip-32": 0.12,
-            "resnet-18": 0.18,
-            "mobilenet-v3": 0.20,
-        }
-        
-        self.threshold = threshold if threshold else self.default_thresholds.get(encoder_name, 0.15)
-        
-        # Initialize feature extractor
-        self.feature_extractor = D3FeatureExtractor(encoder_name, device)
-        
-        print(f"D3 Detector initialized with {encoder_name} encoder")
-        print(f"Threshold: {self.threshold:.3f}")
-    
-    def preprocess_frame(self, frame: np.ndarray) -> torch.Tensor:
-        """Preprocess frame for encoder."""
-        # Resize to 224x224
+        self.encoder_name = encoder_name.lower()
+        self.loss_type = loss_type
+        self.threshold = threshold if threshold is not None else self.DEFAULT_THRESHOLD
+        self.model = D3Model(
+            encoder_type=self.encoder_name,
+            loss_type=loss_type,
+            device=device,
+        )
+        print(f"D3 Detector initialized  encoder={self.encoder_name}  threshold={self.threshold}")
+
+    # ------------------------------------------------------------------
+    # Frame extraction
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _extract_frames(video_path: str, num_frames: int = 16) -> List[np.ndarray]:
+        cap = cv2.VideoCapture(video_path)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total == 0:
+            cap.release()
+            return []
+        indices = np.linspace(0, total - 1, num_frames, dtype=int)
+        frames: List[np.ndarray] = []
+        for idx in indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+            ret, frame = cap.read()
+            if ret:
+                frames.append(frame)
+        cap.release()
+        return frames
+
+    # ------------------------------------------------------------------
+    # Pre-processing (ImageNet normalisation at 224x224)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _preprocess_frame(frame: np.ndarray) -> torch.Tensor:
         frame = cv2.resize(frame, (224, 224))
-        
-        # Convert BGR to RGB
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        # Normalize (ImageNet stats)
-        frame = frame.astype(np.float32) / 255.0
-        mean = np.array([0.485, 0.456, 0.406])
-        std = np.array([0.229, 0.224, 0.225])
-        frame = (frame - mean) / std
-        
-        # To tensor [C, H, W]
-        frame = torch.from_numpy(frame).permute(2, 0, 1)
-        
-        return frame
-    
-    def predict_video(self, video_path: str, sample_frames: int = 32) -> Dict[str, Any]:
-        """
-        Predict if video is real or AI-generated.
-        
-        Args:
-            video_path: Path to video file
-            sample_frames: Number of frames to sample
-        
-        Returns:
-            Dictionary with prediction results
-        """
-        # Extract frames
+        tensor = torch.from_numpy(frame).float() / 255.0
+        tensor = tensor.permute(2, 0, 1)  # (3, H, W)
+        mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+        return (tensor - mean) / std
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+    def predict_video(self, video_path: str, sample_frames: int = 16) -> Dict[str, Any]:
         frames = self._extract_frames(video_path, sample_frames)
-        
         if len(frames) < 3:
             return {
                 "score": 0.5,
                 "label": "UNKNOWN",
-                "details": {"error": "Insufficient frames"}
+                "details": {"error": "Insufficient frames"},
             }
-        
-        # Preprocess frames
-        processed = torch.stack([self.preprocess_frame(f) for f in frames])
-        
-        # Extract features
-        features = self.feature_extractor.extract_features(processed)
-        
-        # Compute volatility (D3 core)
-        volatility = self.feature_extractor.compute_volatility(features)
-        
-        # Normalize volatility to [0, 1] for scoring
-        # Higher volatility = more real
-        max_expected_volatility = 0.5  # Empirical upper bound
-        normalized_score = min(volatility / max_expected_volatility, 1.0)
-        
-        # Determine label
-        # If volatility > threshold: Real (high motion variance)
-        # If volatility <= threshold: Fake (constrained motion)
+
+        tensors = torch.stack([self._preprocess_frame(f) for f in frames])  # (T,3,224,224)
+        batch = tensors.unsqueeze(0).to(self.device)  # (1,T,3,224,224)
+
+        _, _, volatility_tensor = self.model(batch)
+        volatility = float(volatility_tensor.item())
+
+        # Higher volatility -> real; lower -> AI-generated
         is_real = volatility > self.threshold
-        
-        # Convert to "fake probability" for consistency with other detectors
-        # Higher score = more fake
-        fake_score = 1.0 - normalized_score
-        
+
+        # Produce a "fake score" in [0,1] for compatibility with other detectors
+        if self.threshold > 0:
+            fake_score = max(0.0, min(1.0, 1.0 - volatility / (2.0 * self.threshold)))
+        else:
+            fake_score = 0.5
+
         return {
             "score": fake_score,
             "label": "REAL" if is_real else "FAKE",
@@ -238,34 +232,13 @@ class D3Detector:
                 "volatility": volatility,
                 "threshold": self.threshold,
                 "encoder": self.encoder_name,
+                "loss_type": self.loss_type,
                 "frame_count": len(frames),
-                "detector_type": "d3"
-            }
+                "detector_type": "d3",
+            },
         }
-    
-    def _extract_frames(self, video_path: str, num_frames: int = 32) -> List[np.ndarray]:
-        """Extract evenly spaced frames from video."""
-        cap = cv2.VideoCapture(video_path)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
-        if total_frames == 0:
-            cap.release()
-            return []
-        
-        # Sample frame indices
-        indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
-        
-        frames = []
-        for idx in indices:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            ret, frame = cap.read()
-            if ret:
-                frames.append(frame)
-        
-        cap.release()
-        return frames
 
 
 def create_d3_detector(encoder: str = "xclip-16", device: str = "cpu") -> D3Detector:
-    """Factory function to create D3 detector."""
+    """Factory helper."""
     return D3Detector(encoder_name=encoder, device=device)
