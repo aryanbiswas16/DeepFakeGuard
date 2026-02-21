@@ -237,10 +237,63 @@ guard.set_detector("resnet18")
 
 ---
 
-## 📄 License
+## 📚 Citations
 
-MIT License
+If you use DeepFakeGuard in your research, please cite:
+
+```bibtex
+@software{deepfake_guard_2026,
+  author = {Biswas, Aryan},
+  title = {DeepFakeGuard: A Unified Framework for Deepfake Detection},
+  url = {https://github.com/aryanbiswas16/DeepfakeVidDetection},
+  year = {2026}
+}
+```
+
+### Integrated Methods
+
+**D3 Detector (ICCV 2025):**
+```bibtex
+@inproceedings{zheng2025d3,
+  title={D3: Training-Free AI-Generated Video Detection Using Second-Order Features},
+  author={Zheng, Chende and Suo, Ruiqi and Lin, Chenhao and Zhao, Zhengyu and 
+          Yang, Le and Liu, Shuai and Yang, Minghui and Wang, Cong and Shen, Chao},
+  booktitle={IEEE/CVF International Conference on Computer Vision (ICCV)},
+  year={2025},
+  url={https://arxiv.org/abs/2508.00701}
+}
+```
+
+**IvyFake:**
+```bibtex
+@software{ivyfake2024,
+  author = {Khan, Hamza and et al.},
+  title = {IvyFake: An Explainable and Optimized AI-Generated Image Detection},
+  url = {https://github.com/HamzaKhan760/IvyFakeGenDetector},
+  year = {2024}
+}
+```
+
+**DINOv3:**
+```bibtex
+@inproceedings{oquab2023dinov2,
+  title={DINOv2: Learning Robust Visual Features without Supervision},
+  author={Oquab, Maxime and Darcet, Timoth{\'e}e and Moutakanni, Th{\'e}o and 
+          Vo, Huy and Szafraniec, Marc and Khalidov, Vasil and Fernandez, Pierre and 
+          Haziza, Daniel and Massa, Francisco and El-Nouby, Alaaeldin and others},
+  journal={arXiv preprint arXiv:2304.07193},
+  year={2023}
+}
+```
 
 ---
 
-**Star this repository if you find it useful!**
+## 📄 License
+
+MIT License - see [LICENSE](LICENSE) file for details.
+
+---
+
+**⭐ Star this repository if you find it useful!**
+
+*Built with ❤️ for the deepfake detection research community.*
