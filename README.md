@@ -1,21 +1,24 @@
-# Deepfake Guard Toolkit v0.2.0
+# Deepfake Guard Toolkit v0.4.0
 
 A multimodal Python library for deepfake detection with **multiple detector backends**, ready for production and research.
 
-## 🆕 New in v0.2.0 - Multi-Detector Support
+## 🆕 New in v0.4.0 - D3 Integration
 
-Now supports multiple detection backends:
+Now supports **4 detection backends**:
 - **🧠 DINOv3** (ViT-B/16) - Face-based detection with 0.88+ AUROC
 - **🎯 ResNet18** (CNN) - Full-frame detection, lightweight
+- **🌿 IvyFake** (CLIP) - Explainable AIGC detection
+- **📊 D3** (XCLIP/ResNet) - Training-free detection using second-order temporal features (ICCV 2025)
 
 Switch between detectors at runtime via API, GUI, or Python API!
 
 ---
 
 ## Features
-- **🔄 Multiple Detectors:** Switch between DINOv3 and ResNet18 backends
+- **🔄 Multiple Detectors:** Switch between DINOv3, ResNet18, IvyFake, and D3 backends
 - **🎛️ Toggle Interface:** GUI with detector selection sidebar
 - **📊 Visual Analysis:** State-of-the-art detection using DINOv3 Vision Transformers
+- **📈 Training-Free Option:** D3 detector requires no training (ICCV 2025 method)
 - **🔌 Multimodal Ready:** Architecture designed to easily plug in Audio and Metadata detectors
 - **🚀 Production Ready:** Includes FastAPI server and Streamlit demo UI
 - **💻 Easy API:** Simple Python interface for integrating into existing workflows
@@ -68,6 +71,10 @@ guard.set_detector("resnet18")
 
 # Detect with ResNet18
 result2 = guard.detect_video("video.mp4")
+
+# Or use D3 (training-free, second-order temporal features)
+guard.set_detector("d3")
+result3 = guard.detect_video("video.mp4")
 ```
 
 ### API (HTTP)
@@ -77,6 +84,9 @@ curl -X POST "http://localhost:8000/detect?detector=dinov3" -F "file=@video.mp4"
 
 # Detect with ResNet18
 curl -X POST "http://localhost:8000/detect?detector=resnet18" -F "file=@video.mp4"
+
+# Detect with D3 (training-free)
+curl -X POST "http://localhost:8000/detect?detector=d3" -F "file=@video.mp4"
 
 # Switch default detector
 curl http://localhost:8000/switch/resnet18
@@ -95,15 +105,16 @@ streamlit run ui/enhanced_gui.py
 
 ## 🧠 Detector Comparison
 
-| Feature | DINOv3 (ViT-B/16) | ResNet18 (CNN) |
-|---------|---------------------|---------------------------|
-| **Architecture** | Vision Transformer (ViT-B/16) | CNN (ResNet18) |
-| **Face Detection** | ✅ MTCNN face cropping | ❌ Full frame analysis |
-| **Embeddings** | 768-dim | 512-dim |
-| **Training** | Fine-tuned on deepfakes | Pretrained ImageNet |
-| **Accuracy** | 0.88+ AUROC | Baseline |
-| **Speed** | Slower | Faster |
-| **Weights Required** | ✅ Yes | ❌ No |
+| Feature | DINOv3 (ViT-B/16) | ResNet18 (CNN) | IvyFake (CLIP) | D3 (Temporal) |
+|---------|-------------------|----------------|----------------|---------------|
+| **Architecture** | Vision Transformer (ViT-B/16) | CNN (ResNet18) | CLIP ViT-B/32 | XCLIP/ResNet |
+| **Face Detection** | ✅ MTCNN face cropping | ❌ Full frame analysis | ❌ Full frame analysis | ❌ Full frame analysis |
+| **Embeddings** | 768-dim | 512-dim | 512-dim | Varies |
+| **Training** | Fine-tuned on deepfakes | Pretrained ImageNet | Pretrained CLIP | Training-free |
+| **Accuracy** | 0.88+ AUROC | Baseline | Good | Varies by encoder |
+| **Speed** | Slower | Faster | Moderate | Fast |
+| **Weights Required** | ✅ Yes | ❌ No | ❌ No | ❌ No |
+| **Explainability** | Limited | Limited | High (artifacts) | High (volatility) |
 
 ---
 
@@ -118,15 +129,21 @@ DeepFakeGuard/
 │   │   │   ├── detector.py
 │   │   │   ├── frame_encoder.py
 │   │   │   └── classifier_head.py
-│   │   └── resnet18/            # ResNet18 detector (NEW)
+│   │   ├── resnet18/            # ResNet18 detector
+│   │   │   ├── detector.py
+│   │   │   └── __init__.py
+│   │   ├── ivyfake/             # IvyFake CLIP detector
+│   │   │   ├── detector.py
+│   │   │   └── __init__.py
+│   │   └── d3/                  # D3 detector (NEW)
 │   │       ├── detector.py
 │   │       └── __init__.py
 │   └── utils/                   # Shared utilities
 ├── app/
-│   └── main.py                  # FastAPI with detector endpoints (UPDATED)
+│   └── main.py                  # FastAPI with detector endpoints
 ├── ui/
 │   ├── demo_frontend.py         # Basic UI
-│   └── enhanced_gui.py          # UI with detector toggle (NEW)
+│   └── enhanced_gui.py          # UI with detector toggle
 └── weights/                     # Model weights storage
 ```
 

@@ -1,6 +1,6 @@
 """
 Enhanced Deepfake Guard GUI with detector toggle
-Supports DINOv3, ResNet18, and IvyFake detectors
+Supports DINOv3, ResNet18, IvyFake, and D3 detectors
 """
 
 import streamlit as st
@@ -23,11 +23,12 @@ st.sidebar.header("⚙️ Detector Settings")
 
 detector_type = st.sidebar.selectbox(
     "Select Detector",
-    options=["dinov3", "resnet18", "ivyfake"],
+    options=["dinov3", "resnet18", "ivyfake", "d3"],
     format_func=lambda x: {
         "dinov3": "🧠 DINOv3 (ViT-B/16 - 0.88 AUROC)",
         "resnet18": "🎯 ResNet18 (CNN - Pretrained)",
-        "ivyfake": "🌿 IvyFake (CLIP - Explainable)"
+        "ivyfake": "🌿 IvyFake (CLIP - Explainable)",
+        "d3": "📊 D3 (Training-Free - Temporal)"
     }[x],
     help="Switch between different detection backends"
 )
@@ -62,6 +63,20 @@ detector_info = {
         "pros": "Explainable, artifact detection, pretrained",
         "cons": "First run downloads CLIP model",
         "requires_weights": False
+    },
+    "d3": {
+        "name": "D3 - Detection by Difference of Differences",
+        "description": "Training-free AI video detection using second-order temporal features",
+        "features": [
+            "Training-free detection",
+            "Second-order temporal features",
+            "Motion volatility analysis",
+            "No face cropping required",
+            "ICCV 2025 method"
+        ],
+        "pros": "No training needed, analyzes temporal consistency",
+        "cons": "Sensitivity varies by video type",
+        "requires_weights": False
     }
 }
 
@@ -76,6 +91,23 @@ for feat in info['features']:
 st.sidebar.markdown(f"✅ **Pros:** {info['pros']}")
 st.sidebar.markdown(f"⚠️ **Cons:** {info['cons']}")
 
+# D3 encoder selection
+if detector_type == "d3":
+    st.sidebar.divider()
+    d3_encoder = st.sidebar.selectbox(
+        "D3 Encoder",
+        options=["xclip-16", "xclip-32", "resnet-18", "mobilenet-v3"],
+        format_func=lambda x: {
+            "xclip-16": "XCLIP-16 (Recommended)",
+            "xclip-32": "XCLIP-32",
+            "resnet-18": "ResNet-18",
+            "mobilenet-v3": "MobileNet-v3 (Fastest)"
+        }[x],
+        help="Encoder backbone for D3 feature extraction"
+    )
+else:
+    d3_encoder = None
+
 # Weights path (only for DINOv3)
 weights_path = None
 if detector_type == "dinov3":
@@ -88,7 +120,7 @@ if detector_type == "dinov3":
 
 # Initialize detector
 @st.cache_resource
-def load_detector(det_type: str, weights: str = None):
+def load_detector(det_type: str, weights: str = None, d3_enc: str = "xclip-16"):
     """Load detector with caching."""
     import sys
     src_path = Path(__file__).resolve().parents[1] / "src"
@@ -98,16 +130,20 @@ def load_detector(det_type: str, weights: str = None):
     from deepfake_guard import DeepfakeGuard
     
     try:
+        # For D3, pass encoder info through detector type
         guard = DeepfakeGuard(
             weights_path=weights if weights and os.path.exists(weights) else None,
             detector_type=det_type
         )
+        # If D3, initialize with specific encoder
+        if det_type == "d3" and d3_enc:
+            guard._init_d3(encoder=d3_enc)
         return guard, None
     except Exception as e:
         return None, str(e)
 
 with st.spinner(f"Loading {detector_type.upper()} detector..."):
-    guard, error = load_detector(detector_type, weights_path)
+    guard, error = load_detector(detector_type, weights_path, d3_encoder)
 
 if error:
     st.error(f"Failed to load detector: {error}")
@@ -201,9 +237,13 @@ if uploaded_file is not None:
                                 label = res.get("label", "UNKNOWN")
                                 
                                 if label == "FAKE":
-                                    st.error(f"**{label}**\n\nScore: {score:.3f}")
+                                    st.error(f"**{label}**
+
+Score: {score:.3f}")
                                 else:
-                                    st.success(f"**{label}**\n\nScore: {score:.3f}")
+                                    st.success(f"**{label}**
+
+Score: {score:.3f}")
                             
                             with cols[1]:
                                 details = res.get("details", {})
@@ -218,6 +258,15 @@ if uploaded_file is not None:
                                     frame_count = len(frame_count)
                                 st.caption(f"Frames analyzed: {frame_count}")
                                 
+                                # Show D3-specific info
+                                volatility = details.get("volatility")
+                                if volatility is not None:
+                                    st.caption(f"Motion Volatility: {volatility:.4f}")
+                                
+                                encoder = details.get("encoder")
+                                if encoder:
+                                    st.caption(f"Encoder: {encoder}")
+                                
                                 # Show features for IvyFake
                                 features = details.get("features", [])
                                 if features:
@@ -230,7 +279,7 @@ if uploaded_file is not None:
                                 
                                 # Show instability if available
                                 instability = details.get("instability")
-                                if instability is not None:
+                                if instability is not None and volatility is None:
                                     st.caption(f"Frame variance: {instability:.4f}")
                                 
                                 # Show any notes
@@ -266,8 +315,8 @@ else:
     
     st.divider()
     
-    # Show all 3 detector options
-    col1, col2, col3 = st.columns(3)
+    # Show all 4 detector options
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         st.subheader("🧠 DINOv3")
@@ -310,7 +359,21 @@ else:
         
         **Requires:** No weights
         """)
+    
+    with col4:
+        st.subheader("📊 D3")
+        st.markdown("""
+        **Best for:** Training-free detection
+        
+        **Features:**
+        - Second-order features
+        - Temporal volatility
+        - No training needed
+        - ICCV 2025
+        
+        **Requires:** No weights
+        """)
 
 # Footer
 st.divider()
-st.caption("Deepfake Guard v0.3.0 | Multi-detector support: DINOv3, ResNet18, IvyFake")
+st.caption("Deepfake Guard v0.4.0 | Multi-detector support: DINOv3, ResNet18, IvyFake, D3")

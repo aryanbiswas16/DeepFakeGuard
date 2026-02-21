@@ -1,0 +1,15 @@
+
+\begin{table*}[t]
+\centering
+\caption{Comprehensive Benchmark Results on Synthetic Test Set}
+\label{tab:benchmark-results}
+\begin{tabular}{lccccccc}
+\toprule
+\textbf{Method} & \textbf{Accuracy} & \textbf{AUROC} & \textbf{Precision} & \textbf{Recall} & \textbf{Time (ms)} & \textbf{Memory (MB)} & \textbf{Face Req.} \\
+\midrule
+ResNet18 & 0.500 & 1.000 & 0.000 & 0.000 & 242.1 & 45 & No \\
+IvyFake (CLIP) & 0.500 & 1.000 & 0.500 & 1.000 & 164.5 & 590 & No \\
+DINOv3 (Ours) & 0.500 & 0.500 & 0.000 & 0.000 & 63.6 & 330 & Yes \\
+\bottomrule
+\end{tabular}
+\end{table*}
