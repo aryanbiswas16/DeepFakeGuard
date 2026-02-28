@@ -45,7 +45,8 @@ dev = [
 ]
 ui = [
     "streamlit>=1.25.0",
-    "requests>=2.31.0"
+    "requests>=2.31.0",
+    "plotly>=5.15.0"
 ]
 api = [
     "fastapi>=0.100.0",
@@ -67,6 +68,9 @@ Documentation = "https://github.com/aryanbiswas16/DeepFakeGuard#readme"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"deepfake_guard" = ["weights/*.pth"]
 
 [tool.black]
 line-length = 100

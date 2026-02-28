@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Literal
 
 import torch
@@ -69,17 +70,34 @@ class DeepfakeGuard:
             f"{detector_type.upper()} deepfake detection"
         )
 
-    def _init_dinov3(self, weights_path: Optional[str]) -> None:
-        """Initialize DINOv3-based detector."""
+    # Path to the weights bundled inside the installed package
+    _BUNDLED_DINOV3_WEIGHTS = Path(__file__).parent / "weights" / "dinov3_best_v3.pth"
+
+    def _init_dinov3(self, weights_path: Optional[str] = None) -> None:
+        """Initialize DINOv3-based detector.
+
+        Weights are resolved in this order:
+          1. Explicit ``weights_path`` argument (if provided and exists)
+          2. Bundled weights shipped with the package
+        """
         self.visual_detector = DINOv3Detector(device=self.device)
         self.face_cropper = FaceCropper(
             device=self.device,
             margin_px=0.5,
             padding_ratio=0.3
         )
-        
-        if weights_path:
-            self.load_visual_weights(weights_path)
+
+        resolved = None
+        if weights_path and os.path.exists(weights_path):
+            resolved = weights_path
+        elif self._BUNDLED_DINOV3_WEIGHTS.exists():
+            resolved = str(self._BUNDLED_DINOV3_WEIGHTS)
+            print(f"Using bundled DINOv3 weights: {resolved}")
+        else:
+            print("WARNING: No DINOv3 weights found. Running with random initialisation.")
+
+        if resolved:
+            self.load_visual_weights(resolved)
 
     def _init_resnet18(self) -> None:
         """Initialize ResNet18-based detector (pretrained ImageNet weights)."""
@@ -169,7 +187,7 @@ class DeepfakeGuard:
         """Run the full detection pipeline on a video file."""
         result: Dict[str, Any] = {
             "model_info": {
-                "version": "1.2.0",
+                "version": "0.4.0",
                 "detector_type": self.detector_type,
                 **self._model_info
             },
@@ -199,13 +217,44 @@ class DeepfakeGuard:
 
         return result
 
+    # Per-detector trust priors: reflect how calibrated each score is.
+    # DINOv3 is fine-tuned on deepfakes  → high trust.
+    # D3 is training-free but principled  → medium trust.
+    # ResNet18 + IvyFake have untrained classification heads → low trust.
+    _DETECTOR_TRUST: Dict[str, float] = {
+        "dinov3":   1.0,
+        "d3":       0.6,
+        "ivyfake":  0.5,   # principled CLIP cosine-sim signal, not trained on deepfakes
+        "resnet18": 0.2,   # untrained head on ImageNet features
+    }
+
     def _aggregate_scores(self, modality_results: Dict[str, Dict[str, Any]]) -> float:
-        """Aggregate scores from all modalities."""
-        scores = [res.get("score") for res in modality_results.values() if isinstance(res, dict)]
-        scores = [s for s in scores if isinstance(s, (int, float))]
-        if not scores:
+        """Confidence-weighted aggregate across modalities.
+
+        Each score is weighted by:
+          trust_prior(detector) × certainty(score)
+
+        where certainty = 2 * |score - 0.5|  (0 = completely uncertain, 1 = maximal).
+        This ensures that a highly confident trained detector dominates an uncertain
+        untrained one, and that scores close to 0.5 contribute little to the result.
+        """
+        weighted_sum = 0.0
+        weight_total = 0.0
+        for res in modality_results.values():
+            if not isinstance(res, dict):
+                continue
+            score = res.get("score")
+            if not isinstance(score, (int, float)):
+                continue
+            det_type = res.get("details", {}).get("detector_type", self.detector_type)
+            trust = self._DETECTOR_TRUST.get(det_type, 0.5)
+            certainty = abs(float(score) - 0.5) * 2.0  # ∈ [0, 1]
+            weight = trust * (0.1 + 0.9 * certainty)   # floor at 10 % of trust so zero-certainty still votes
+            weighted_sum += float(score) * weight
+            weight_total += weight
+        if weight_total == 0.0:
             return 0.0
-        return float(sum(scores) / len(scores))
+        return float(weighted_sum / weight_total)
 
     def _run_visual_analysis(self, video_path: str) -> Dict[str, Any]:
         """Run visual analysis based on current detector type."""

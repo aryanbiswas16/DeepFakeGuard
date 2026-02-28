@@ -8,6 +8,84 @@ from pathlib import Path
 import tempfile
 import os
 
+
+# ── Chart helpers ────────────────────────────────────────────────────────────
+
+def _get_per_frame_probs(result_dict: dict):
+    """Pull per_frame_fake_probs out of a detect_video result, or return None."""
+    for res in result_dict.get("modality_results", {}).values():
+        probs = res.get("details", {}).get("per_frame_fake_probs")
+        if probs:
+            return probs
+    return None
+
+
+def render_frame_chart(per_frame_probs: list, threshold: float = 0.5, title: str = ""):
+    """Render a per-frame fake-probability timeline."""
+    try:
+        import plotly.graph_objects as go
+        x = list(range(len(per_frame_probs)))
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=x, y=per_frame_probs,
+            mode="lines+markers",
+            name="P(fake)",
+            line=dict(color="#e74c3c", width=2),
+            marker=dict(size=5),
+            fill="tozeroy",
+            fillcolor="rgba(231,76,60,0.12)"
+        ))
+        fig.add_hline(
+            y=threshold, line_dash="dash", line_color="orange",
+            annotation_text=f"threshold ({threshold:.0%})",
+            annotation_position="bottom right"
+        )
+        fig.update_layout(
+            title=f"Per-Frame P(fake) — {title}" if title else "Per-Frame P(fake)",
+            xaxis_title="Frame index",
+            yaxis_title="P(fake)",
+            yaxis=dict(range=[0, 1]),
+            height=280,
+            margin=dict(l=0, r=0, t=40, b=0),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    except ImportError:
+        import pandas as pd
+        st.line_chart(pd.DataFrame({"P(fake)": per_frame_probs}))
+
+
+def render_ensemble_chart(scores: dict, labels: dict, threshold: float = 0.5):
+    """Render a side-by-side bar chart comparing all detector scores."""
+    try:
+        import plotly.graph_objects as go
+        names = list(scores.keys())
+        vals = [scores[n] for n in names]
+        colors = ["#e74c3c" if labels[n] == "FAKE" else "#2ecc71" for n in names]
+        fig = go.Figure(go.Bar(
+            x=[n.upper() for n in names],
+            y=vals,
+            marker_color=colors,
+            text=[f"{v:.1%}" for v in vals],
+            textposition="outside"
+        ))
+        fig.add_hline(
+            y=threshold, line_dash="dash", line_color="orange",
+            annotation_text=f"threshold ({threshold:.0%})",
+            annotation_position="top left"
+        )
+        fig.update_layout(
+            yaxis=dict(range=[0, 1.15], title="P(fake)"),
+            xaxis_title="Detector",
+            height=340,
+            margin=dict(l=0, r=0, t=20, b=0),
+            showlegend=False
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    except ImportError:
+        import pandas as pd
+        st.bar_chart(pd.DataFrame({"Score": scores}))
+
+
 # Page config
 st.set_page_config(
     page_title="Deepfake Guard",
@@ -23,14 +101,15 @@ st.sidebar.header("⚙️ Detector Settings")
 
 detector_type = st.sidebar.selectbox(
     "Select Detector",
-    options=["dinov3", "resnet18", "ivyfake", "d3"],
+    options=["dinov3", "resnet18", "ivyfake", "d3", "all"],
     format_func=lambda x: {
-        "dinov3": "🧠 DINOv3 (ViT-B/16 - 0.88 AUROC)",
+        "dinov3":   "🧠 DINOv3 (ViT-B/16 - 0.88 AUROC)",
         "resnet18": "🎯 ResNet18 (CNN - Pretrained)",
-        "ivyfake": "🌿 IvyFake (CLIP - Explainable)",
-        "d3": "📊 D3 (Training-Free - Temporal)"
+        "ivyfake":  "🌿 IvyFake (CLIP - Explainable)",
+        "d3":       "📊 D3 (Training-Free - Temporal)",
+        "all":      "🔀 All Detectors (Ensemble)"
     }[x],
-    help="Switch between different detection backends"
+    help="Switch between different detection backends, or run all 4 for an ensemble comparison"
 )
 
 detector_info = {
@@ -40,7 +119,7 @@ detector_info = {
         "features": ["Face cropping (MTCNN)", "768-dim embeddings", "LayerNorm tuning", "0.88+ AUROC"],
         "pros": "Higher accuracy, trained on deepfakes",
         "cons": "Requires face detection, slower",
-        "requires_weights": True
+        "requires_weights": False
     },
     "resnet18": {
         "name": "ResNet18 CNN",
@@ -81,75 +160,98 @@ detector_info = {
 }
 
 # Show detector info
-info = detector_info[detector_type]
-st.sidebar.markdown(f"**{info['name']}**")
-st.sidebar.markdown(f"_{info['description']}_")
-st.sidebar.markdown("**Features:**")
-for feat in info['features']:
-    st.sidebar.markdown(f"- {feat}")
+if detector_type == "all":
+    st.sidebar.markdown("**🔀 Ensemble Mode**")
+    st.sidebar.markdown("_Runs all 4 detectors and compares their verdicts._")
+    st.sidebar.markdown("- DINOv3 · ResNet18 · IvyFake · D3")
+    st.sidebar.markdown("✅ **Pros:** Cross-model agreement, richer analysis")
+    st.sidebar.markdown("⚠️ **Cons:** Slower — loads all models")
+else:
+    info = detector_info[detector_type]
+    st.sidebar.markdown(f"**{info['name']}**")
+    st.sidebar.markdown(f"_{info['description']}_")
+    st.sidebar.markdown("**Features:**")
+    for feat in info['features']:
+        st.sidebar.markdown(f"- {feat}")
+    st.sidebar.markdown(f"✅ **Pros:** {info['pros']}")
+    st.sidebar.markdown(f"⚠️ **Cons:** {info['cons']}")
 
-st.sidebar.markdown(f"✅ **Pros:** {info['pros']}")
-st.sidebar.markdown(f"⚠️ **Cons:** {info['cons']}")
-
-# D3 encoder selection
-if detector_type == "d3":
+# D3 options (shown for d3 or ensemble)
+if detector_type in ("d3", "all"):
     st.sidebar.divider()
     d3_encoder = st.sidebar.selectbox(
         "D3 Encoder",
-        options=["xclip-16", "xclip-32", "resnet-18", "mobilenet-v3"],
+        options=["xclip-16", "xclip-32", "clip-16", "clip-32", "dino-base", "dino-large", "resnet-18", "mobilenet-v3"],
         format_func=lambda x: {
-            "xclip-16": "XCLIP-16 (Recommended)",
-            "xclip-32": "XCLIP-32",
-            "resnet-18": "ResNet-18",
-            "mobilenet-v3": "MobileNet-v3 (Fastest)"
+            "xclip-16":     "XCLIP-16 (Recommended)",
+            "xclip-32":     "XCLIP-32",
+            "clip-16":      "CLIP ViT-B/16",
+            "clip-32":      "CLIP ViT-B/32",
+            "dino-base":    "DINOv2-Base (facebook/dinov2-base)",
+            "dino-large":   "DINOv2-Large (facebook/dinov2-large)",
+            "resnet-18":    "ResNet-18",
+            "mobilenet-v3": "MobileNet-v3 (Fastest)",
         }[x],
         help="Encoder backbone for D3 feature extraction"
     )
+    d3_threshold = st.sidebar.slider(
+        "D3 Volatility Threshold",
+        min_value=0.5, max_value=6.0, value=2.5, step=0.1,
+        help="Lower = more sensitive. Real videos tend to have higher motion volatility than AI-generated ones."
+    )
 else:
     d3_encoder = None
+    d3_threshold = 2.5
 
-# Weights path (only for DINOv3)
-weights_path = None
-if detector_type == "dinov3":
-    st.sidebar.divider()
-    weights_path = st.sidebar.text_input(
-        "Weights Path",
-        value="weights/dinov3_best_v3.pth",
-        help="Path to DINOv3 weights file"
-    )
 
-# Initialize detector
+# ── Detector loading (each type cached independently) ────────────────────────
 @st.cache_resource
-def load_detector(det_type: str, weights: str = None, d3_enc: str = "xclip-16"):
-    """Load detector with caching."""
+def _load_single_detector(det_type: str, d3_enc: str = "xclip-16"):
     import sys
     src_path = Path(__file__).resolve().parents[1] / "src"
     if str(src_path) not in sys.path:
         sys.path.insert(0, str(src_path))
-    
     from deepfake_guard import DeepfakeGuard
-    
     try:
-        # For D3, pass encoder info through detector type
-        guard = DeepfakeGuard(
-            weights_path=weights if weights and os.path.exists(weights) else None,
-            detector_type=det_type
-        )
-        # If D3, initialize with specific encoder
+        guard = DeepfakeGuard(detector_type=det_type)
         if det_type == "d3" and d3_enc:
             guard._init_d3(encoder=d3_enc)
         return guard, None
     except Exception as e:
         return None, str(e)
 
-with st.spinner(f"Loading {detector_type.upper()} detector..."):
-    guard, error = load_detector(detector_type, weights_path, d3_encoder)
 
-if error:
-    st.error(f"Failed to load detector: {error}")
-    st.stop()
+def _load_all_detectors(d3_enc: str = "xclip-16"):
+    """Load all 4 detectors, each using the shared cache."""
+    guards, errors = {}, {}
+    for t in ["dinov3", "resnet18", "ivyfake", "d3"]:
+        g, e = _load_single_detector(t, d3_enc)
+        if e:
+            errors[t] = e
+        else:
+            guards[t] = g
+    return guards, errors
 
-st.success(f"✅ {detector_type.upper()} detector loaded!")
+
+# Initialise / retrieve from cache
+if detector_type == "all":
+    with st.spinner("Loading all 4 detectors (results are cached after first run)..."):
+        guards, load_errors = _load_all_detectors(d3_encoder)
+    for det, err in load_errors.items():
+        st.sidebar.warning(f"⚠️ {det.upper()} failed: {err}")
+    if not guards:
+        st.error("No detectors could be loaded.")
+        st.stop()
+    loaded_names = ", ".join(k.upper() for k in guards)
+    st.success(f"✅ Loaded: {loaded_names}")
+else:
+    with st.spinner(f"Loading {detector_type.upper()} detector..."):
+        _guard, _error = _load_single_detector(detector_type, d3_encoder)
+    if _error:
+        st.error(f"Failed to load detector: {_error}")
+        st.stop()
+    guards = {detector_type: _guard}
+    st.success(f"✅ {detector_type.upper()} detector loaded!")
 
 # Main content
 st.divider()
@@ -199,101 +301,169 @@ if uploaded_file is not None:
         if st.button("🔍 Analyze Video", type="primary", use_container_width=True):
             with st.spinner("Analyzing video... This may take a moment."):
                 try:
-                    # Run detection
-                    result = guard.detect_video(video_path)
-                    
-                    # Display results
-                    overall_score = result.get("overall_score", 0)
-                    overall_label = result.get("overall_label", "UNKNOWN")
-                    
-                    # Main result card
-                    if overall_label == "FAKE":
-                        st.error(f"## 🚨 FAKE DETECTED")
-                    elif overall_label == "REAL":
-                        st.success(f"## ✅ REAL VIDEO")
-                    else:
-                        st.warning(f"## ⚠️ UNKNOWN")
-                    
-                    # Score metrics
-                    cols = st.columns(3)
-                    with cols[0]:
-                        st.metric("Confidence", f"{overall_score:.1%}")
-                    with cols[1]:
-                        st.metric("Threshold", f"{threshold:.0%}")
-                    with cols[2]:
-                        confidence = abs(overall_score - 0.5) * 2
-                        st.metric("Certainty", f"{confidence:.1%}")
-                    
-                    # Progress bar
-                    st.progress(overall_score)
-                    
-                    # Modality results
-                    st.markdown("### 📊 Detailed Analysis")
-                    for modality, res in result.get("modality_results", {}).items():
-                        with st.expander(f"{modality.title()} Analysis", expanded=True):
-                            cols = st.columns([1, 2])
-                            with cols[0]:
-                                score = res.get("score", 0)
-                                label = res.get("label", "UNKNOWN")
-                                
-                                if label == "FAKE":
-                                    st.error(f"**{label}**\n\nScore: {score:.3f}")
+                    # Apply user-configured D3 threshold before running
+                    if "d3" in guards:
+                        d3g = guards["d3"]
+                        if hasattr(d3g, "d3_detector") and d3g.d3_detector:
+                            d3g.d3_detector.threshold = d3_threshold
+
+                    if detector_type == "all":
+                        # ── Ensemble mode ──────────────────────────────────
+                        all_results = {}
+                        for det_name, det_guard in guards.items():
+                            all_results[det_name] = det_guard.detect_video(video_path)
+
+                        scores = {n: r.get("overall_score", 0.0) for n, r in all_results.items()}
+                        labels = {n: r.get("overall_label", "?") for n, r in all_results.items()}
+                        fake_votes = sum(1 for lbl in labels.values() if lbl == "FAKE")
+
+                        # Weighted ensemble score matching core.py trust priors
+                        _TRUST = {"dinov3": 1.0, "d3": 0.6, "ivyfake": 0.5, "resnet18": 0.2}
+                        w_sum, w_total = 0.0, 0.0
+                        for n, s in scores.items():
+                            t = _TRUST.get(n, 0.5)
+                            c = abs(s - 0.5) * 2.0
+                            w = t * (0.1 + 0.9 * c)
+                            w_sum += s * w
+                            w_total += w
+                        ensemble_score = w_sum / w_total if w_total > 0 else 0.0
+
+                        if ensemble_score > threshold:
+                            st.error("## 🚨 ENSEMBLE VERDICT: FAKE")
+                        else:
+                            st.success("## ✅ ENSEMBLE VERDICT: REAL")
+
+                        vcols = st.columns(3)
+                        with vcols[0]:
+                            st.metric("Ensemble Score", f"{ensemble_score:.1%}")
+                        with vcols[1]:
+                            st.metric("Fake Votes", f"{fake_votes} / {len(guards)}")
+                        with vcols[2]:
+                            certainty = abs(ensemble_score - 0.5) * 2
+                            st.metric("Certainty", f"{certainty:.1%}")
+
+                        st.markdown("### 🔀 Detector Comparison")
+                        render_ensemble_chart(scores, labels, threshold)
+
+                        st.markdown("### 📈 Per-Detector Timelines")
+                        for det_name, res in all_results.items():
+                            per_frame = _get_per_frame_probs(res)
+                            det_label = labels[det_name]
+                            icon = "🔴" if det_label == "FAKE" else "🟢"
+                            with st.expander(
+                                f"{icon} {det_name.upper()} — {scores[det_name]:.1%} ({det_label})",
+                                expanded=True
+                            ):
+                                if per_frame:
+                                    render_frame_chart(per_frame, threshold, det_name.upper())
                                 else:
-                                    st.success(f"**{label}**\n\nScore: {score:.3f}")
-                            
-                            with cols[1]:
-                                details = res.get("details", {})
-                                
-                                # Show detector type
-                                det_type = details.get("detector_type", detector_type)
-                                st.caption(f"Detector: {det_type.upper()}")
-                                
-                                # Show frame count
-                                frame_count = details.get("frame_count") or details.get("per_frame_fake_probs", [])
-                                if isinstance(frame_count, list):
-                                    frame_count = len(frame_count)
-                                st.caption(f"Frames analyzed: {frame_count}")
-                                
-                                # Show D3-specific info
-                                volatility = details.get("volatility")
-                                if volatility is not None:
-                                    st.caption(f"Motion Volatility: {volatility:.4f}")
-                                
-                                encoder = details.get("encoder")
-                                if encoder:
-                                    st.caption(f"Encoder: {encoder}")
-                                
-                                # Show features for IvyFake
-                                features = details.get("features", [])
-                                if features:
-                                    st.caption(f"Analysis: {', '.join(features)}")
-                                
-                                # Show backbone info
-                                backbone = details.get("backbone")
-                                if backbone:
-                                    st.caption(f"Backbone: {backbone}")
-                                
-                                # Show instability if available
-                                instability = details.get("instability")
-                                if instability is not None and volatility is None:
-                                    st.caption(f"Frame variance: {instability:.4f}")
-                                
-                                # Show any notes
-                                note = details.get("note")
-                                if note:
-                                    st.info(note)
-                    
-                    # Errors
-                    errors = result.get("errors", [])
-                    if errors:
-                        st.error("### ⚠️ Errors")
-                        for err in errors:
-                            st.error(err)
-                    
-                    # Full JSON
-                    with st.expander("📄 Raw JSON Response"):
-                        st.json(result)
-                    
+                                    # D3 produces a volatility scalar, not per-frame probs
+                                    details = res.get("modality_results", {}).get("visual", {}).get("details", {})
+                                    vol = details.get("volatility")
+                                    if vol is not None:
+                                        thr = details.get("threshold", d3_threshold)
+                                        import math
+                                        try:
+                                            proxy = 1.0 / (1.0 + math.exp(1.5 * (vol - thr)))
+                                        except OverflowError:
+                                            proxy = 0.0
+                                        st.caption(f"Motion Volatility: {vol:.4f}  |  threshold: {thr:.2f}")
+                                        st.progress(proxy, text=f"Fake-likelihood (sigmoid): {proxy:.1%}")
+
+                        all_errs = [e for r in all_results.values() for e in r.get("errors", [])]
+                        if all_errs:
+                            with st.expander("⚠️ Errors"):
+                                for err in all_errs:
+                                    st.warning(err)
+
+                        with st.expander("📄 Raw JSON (all detectors)"):
+                            st.json(all_results)
+
+                    else:
+                        # ── Single-detector mode ────────────────────────────
+                        result = guards[detector_type].detect_video(video_path)
+
+                        overall_score = result.get("overall_score", 0)
+                        overall_label = result.get("overall_label", "UNKNOWN")
+
+                        if overall_label == "FAKE":
+                            st.error("## 🚨 FAKE DETECTED")
+                        elif overall_label == "REAL":
+                            st.success("## ✅ REAL VIDEO")
+                        else:
+                            st.warning("## ⚠️ UNKNOWN")
+
+                        cols = st.columns(3)
+                        with cols[0]:
+                            st.metric("Confidence", f"{overall_score:.1%}")
+                        with cols[1]:
+                            st.metric("Threshold", f"{threshold:.0%}")
+                        with cols[2]:
+                            confidence = abs(overall_score - 0.5) * 2
+                            st.metric("Certainty", f"{confidence:.1%}")
+
+                        st.progress(overall_score)
+
+                        # Per-frame probability timeline
+                        per_frame = _get_per_frame_probs(result)
+                        if per_frame:
+                            st.markdown("### 📈 Per-Frame Timeline")
+                            render_frame_chart(per_frame, threshold, detector_type.upper())
+
+                        # Modality details
+                        st.markdown("### 📊 Detailed Analysis")
+                        for modality, res in result.get("modality_results", {}).items():
+                            with st.expander(f"{modality.title()} Analysis", expanded=True):
+                                mcols = st.columns([1, 2])
+                                with mcols[0]:
+                                    score = res.get("score", 0)
+                                    label = res.get("label", "UNKNOWN")
+                                    if label == "FAKE":
+                                        st.error(f"**{label}**\n\nScore: {score:.3f}")
+                                    else:
+                                        st.success(f"**{label}**\n\nScore: {score:.3f}")
+                                with mcols[1]:
+                                    details = res.get("details", {})
+                                    det_type_str = details.get("detector_type", detector_type)
+                                    st.caption(f"Detector: {det_type_str.upper()}")
+                                    frame_count = details.get("frame_count") or details.get("per_frame_fake_probs", [])
+                                    if isinstance(frame_count, list):
+                                        frame_count = len(frame_count)
+                                    st.caption(f"Frames analyzed: {frame_count}")
+                                    volatility = details.get("volatility")
+                                    if volatility is not None:
+                                        st.caption(f"Motion Volatility: {volatility:.4f}")
+                                    encoder = details.get("encoder")
+                                    if encoder:
+                                        st.caption(f"Encoder: {encoder}")
+                                    features = details.get("features", [])
+                                    if features:
+                                        st.caption(f"Analysis: {', '.join(features)}")
+                                    backbone = details.get("backbone")
+                                    if backbone:
+                                        st.caption(f"Backbone: {backbone}")
+                                    instability = details.get("instability")
+                                    if instability is not None and volatility is None:
+                                        st.caption(f"Frame variance: {instability:.4f}")
+                                    temporal_sim = details.get("temporal_sim")
+                                    if temporal_sim is not None:
+                                        st.caption(f"Temporal consistency (cos-sim): {temporal_sim:.4f}")
+                                    spa = details.get("spatial_anomaly")
+                                    if spa is not None:
+                                        st.caption(f"Spatial anomaly: {spa:.4f}")
+                                    note = details.get("note")
+                                    if note:
+                                        st.info(note)
+
+                        errors = result.get("errors", [])
+                        if errors:
+                            st.error("### ⚠️ Errors")
+                            for err in errors:
+                                st.error(err)
+
+                        with st.expander("📄 Raw JSON Response"):
+                            st.json(result)
+
                 except Exception as e:
                     st.error(f"Analysis failed: {str(e)}")
                     import traceback
