@@ -1,0 +1,30 @@
+{
+  "dinov3": {
+    "avg_real_score": 0.0,
+    "avg_fake_score": 0.0,
+    "separation": 0.0,
+    "avg_time": 0.0593,
+    "status": "OK"
+  },
+  "resnet18": {
+    "avg_real_score": 0.5793,
+    "avg_fake_score": 0.5867,
+    "separation": 0.0074,
+    "avg_time": 0.2404,
+    "status": "OK"
+  },
+  "ivyfake": {
+    "avg_real_score": 0.5281,
+    "avg_fake_score": 0.3589,
+    "separation": 0.1693,
+    "avg_time": 0.1592,
+    "status": "OK"
+  },
+  "d3": {
+    "avg_real_score": 0.6576,
+    "avg_fake_score": 0.8216,
+    "separation": 0.1639,
+    "avg_time": 0.7293,
+    "status": "OK"
+  }
+}
