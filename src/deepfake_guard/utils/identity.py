@@ -1,3 +1,4 @@
+import warnings
 import torch
 import torch.nn.functional as F
 from PIL import Image
@@ -11,9 +12,9 @@ class IdentityMatcher:
             from facenet_pytorch import InceptionResnetV1
             self.model = InceptionResnetV1(pretrained='vggface2').eval().to(device)
         except ImportError:
-            print("facenet-pytorch not found. Identity verification disabled.")
+            warnings.warn("facenet-pytorch not installed — identity verification disabled.")
         except Exception as e:
-            print(f"Error loading identity model: {e}")
+            warnings.warn(f"Could not load identity model: {e}")
 
     def get_embedding(self, image):
         if self.model is None:
@@ -39,7 +40,7 @@ class IdentityMatcher:
                 embedding = self.model(img_tensor)
             return embedding
         except Exception as e:
-            print(f"Error getting embedding: {e}")
+            warnings.warn(f"Error computing face embedding: {e}")
             return None
 
     def compute_similarity(self, emb1, emb2):

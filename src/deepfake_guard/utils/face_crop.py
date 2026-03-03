@@ -7,11 +7,11 @@ class FaceCropper:
     def __init__(
         self,
         device='cuda',
-        margin_px=0,           
-        padding_ratio=0.25,     
-        min_face_size=50,       
+        margin_px=0,
+        padding_ratio=0.25,
+        min_face_size=50,
         confidence_threshold=0.95,
-        vertical_shift_ratio=0.1  # NEW: Positive value shifts crop UP
+        vertical_shift_ratio=0.1,
     ):
         self.device = device
         self.margin_px = int(margin_px)
@@ -33,8 +33,7 @@ class FaceCropper:
         cx = (x1 + x2) / 2
         cy = (y1 + y2) / 2
         
-        # NEW: Shift center UP (negative Y) to reduce bottom space
-        # Shift is relative to the face height (bh)
+        # Shift centre upward to better capture lower-face artifacts
         cy -= (bh * vertical_shift_ratio)
         
         side = max(bw, bh) + 2 * pad
@@ -73,8 +72,6 @@ class FaceCropper:
             else:
                 img = image_path_or_pil.convert('RGB')
             
-            img_width, img_height = img.size
-            
             boxes, probs = self.mtcnn.detect(img)
             
             if boxes is None:
@@ -91,9 +88,8 @@ class FaceCropper:
             
             if face_size < self.min_face_size:
                 return (None, {'status': 'face_too_small'}) if return_metadata else None
-            
+
             w, h = img.size
-            # Pass the new vertical_shift_ratio here
             crop_box = self._square_and_clip_box(
                 box,
                 width=w,

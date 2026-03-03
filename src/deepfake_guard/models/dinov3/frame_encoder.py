@@ -14,40 +14,35 @@ class EncoderInfo:
 
 def _try_build_dinov3() -> tuple[nn.Module, EncoderInfo] | None:
     """
-    Attempts to build a DINOv3 ViT encoder via timm.
-    Returns None if timm or all model names are unavailable.
+    Attempts to build a DINOv3 ViT-B/16 encoder via timm.
+    Falls back through DINOv2 variants if the primary model is unavailable.
+    Returns None if timm is not installed or no candidate loads successfully.
     """
     try:
         import timm  # type: ignore
     except Exception:
         return None
 
-    # Try preferred DINOv3 ViT-B/16 first
     candidates = [
-        "vit_base_patch16_dinov3.lvd1689m",  # preferred: matches facebook/dinov3-vitb16-pretrain-lvd1689m
-        "vit_base_patch16_dinov3",            # alt name
-        "vit_base_patch14_dinov2",            # Fallback
+        "vit_base_patch16_dinov3.lvd1689m",
+        "vit_base_patch16_dinov3",
         "vit_base_patch14_dinov2.lvd142m",
-        "vit_large_patch16_dinov3.lvd1689m",  # optional upgrade if mostly frozen
-        "vit_large_patch16_dinov3",           # alt name
-        "vit_large_patch14_dinov2",
+        "vit_base_patch14_dinov2",
+        "vit_large_patch16_dinov3.lvd1689m",
+        "vit_large_patch16_dinov3",
         "vit_large_patch14_dinov2.lvd142m",
+        "vit_large_patch14_dinov2",
     ]
 
     for name in candidates:
         try:
             model = timm.create_model(name, pretrained=True, num_classes=0)
-            embed_dim = getattr(model, "num_features", None) or getattr(model, "embed_dim", None)
-            if embed_dim is None:
-                # fallback guess
-                embed_dim = 1024
+            embed_dim = getattr(model, "num_features", None) or getattr(model, "embed_dim", 1024)
             info = EncoderInfo(name=f"timm:{name}", embed_dim=int(embed_dim), image_size=224)
-            print(f"Loaded encoder: {name}")
             return model, info
         except Exception:
             continue
-            
-    print("Failed to load any DINO model from candidates.")
+
     return None
 
 def _build_resnet50_fallback() -> tuple[nn.Module, EncoderInfo]:
@@ -60,13 +55,25 @@ def _build_resnet50_fallback() -> tuple[nn.Module, EncoderInfo]:
 
 class FrameEncoder(nn.Module):
     """
-    Frame encoder with a DINOv3-first (ViT-B/16 default), ResNet50-fallback policy.
+    DINOv3 ViT-B/16 frame encoder with two-stage parameter-efficient fine-tuning:
 
-    - If DINOv3 is available (via timm), freeze everything, then unfreeze only LayerNorm params.
-    - If using ResNet50 fallback, freeze everything by default (train head only).
+    Stage 1 — LayerNorm tuning (~40K params, 0.04% of backbone):
+        Re-calibrates feature normalization statistics for the forensic domain
+        while keeping all other pre-trained representations frozen.
+
+    Stage 2 — Last-block unfreezing (~7.1M params total, 8.3% of backbone):
+        Adapts high-level semantic representations to deepfake-specific cues
+        while retaining low- and mid-level features frozen.
+
+    Falls back to a frozen ResNet50 backbone if timm / DINOv3 is unavailable.
     """
 
-    def __init__(self, device: str = "cpu", layernorm_tuning: bool = True):
+    def __init__(
+        self,
+        device: str = "cpu",
+        layernorm_tuning: bool = True,
+        unfreeze_last_block: bool = True,
+    ):
         super().__init__()
         self.device = device
 
@@ -84,35 +91,34 @@ class FrameEncoder(nn.Module):
         self.image_size = info.image_size
         self.embed_dim = info.embed_dim
 
-        # Freeze everything
+        # Stage 0: freeze entire backbone
         for p in self.model.parameters():
             p.requires_grad = False
 
-        # LayerNorm tuning for ViT-style models
-        if self.is_dinov3 and layernorm_tuning:
-            for m in self.model.modules():
-                if isinstance(m, nn.LayerNorm):
-                    for p in m.parameters():
+        if self.is_dinov3:
+            # Stage 1: unfreeze LayerNorm (gamma, beta) across all transformer blocks
+            if layernorm_tuning:
+                for m in self.model.modules():
+                    if isinstance(m, nn.LayerNorm):
+                        for p in m.parameters():
+                            p.requires_grad = True
+
+            # Stage 2: unfreeze the final transformer block
+            if unfreeze_last_block:
+                blocks = getattr(self.model, "blocks", None)
+                if blocks is not None and len(blocks) > 0:
+                    for p in blocks[-1].parameters():
                         p.requires_grad = True
 
         self.to(device)
 
-    @torch.no_grad()
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Encodes images: x is [B, 3, H, W] -> embeddings [B, D]
-        """
-        self.eval()
-        emb = self.model(x)
-        emb = torch.nn.functional.normalize(emb, dim=-1)
-        return emb
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Encode images [B, 3, H, W] -> L2-normalised embeddings [B, D]."""
         emb = self.model(x)
-        emb = torch.nn.functional.normalize(emb, dim=-1)
-        return emb
+        return torch.nn.functional.normalize(emb, dim=-1)
 
     def trainable_param_count(self) -> int:
+        """Number of parameters with requires_grad=True."""
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
 

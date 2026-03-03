@@ -41,7 +41,7 @@ class DeepfakeGuard:
     ):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.detector_type = detector_type
-        print(f"Initializing DeepfakeGuard ({detector_type}) on device: {self.device}")
+
 
         self._pipelines: Dict[str, DetectorFn] = {}
         self._model_info: Dict[str, str] = {}
@@ -88,8 +88,7 @@ class DeepfakeGuard:
         self.visual_detector = DINOv3Detector(device=self.device)
         self.face_cropper = FaceCropper(
             device=self.device,
-            margin_px=0.5,
-            padding_ratio=0.3
+            padding_ratio=0.25,
         )
 
         resolved = None
@@ -97,19 +96,17 @@ class DeepfakeGuard:
             resolved = weights_path
         elif self._BUNDLED_DINOV3_WEIGHTS.exists():
             resolved = str(self._BUNDLED_DINOV3_WEIGHTS)
-            print(f"Using bundled DINOv3 weights: {resolved}")
         else:
-            print("WARNING: No DINOv3 weights found. Running with random initialisation.")
+            import warnings
+            warnings.warn("No DINOv3 weights found — running with random initialisation.")
 
         if resolved:
             self.load_visual_weights(resolved)
 
     def _init_resnet18(self) -> None:
-        """Initialize ResNet18-based detector (pretrained ImageNet weights)."""
+        """Initialize ResNet18-based detector (pretrained ImageNet weights, no fine-tuning)."""
         self.resnet_detector = ResNet18Detector(device=self.device)
-        # Note: Uses pretrained ImageNet weights, no custom weights to load
         self.visual_weights_loaded = True
-        print("ResNet18 detector initialized (pretrained ImageNet weights)")
 
     def _init_ivyfake(self, weights_path: Optional[str] = None) -> None:
         """Initialize IvyFake detector (CLIP-based with explainable features)."""
@@ -118,8 +115,6 @@ class DeepfakeGuard:
             weights_path=weights_path,
         )
         self.visual_weights_loaded = True
-        mode = "trained" if self.ivyfake_detector.weights_loaded else "zero-shot"
-        print(f"IvyFake detector initialized (CLIP-ViT-B/32, mode={mode})")
 
     def _init_ivyfake_multiscale(self, weights_path: Optional[str] = None) -> None:
         """Initialize multi-scale IvyFake detector (temporal pyramid)."""
@@ -128,17 +123,17 @@ class DeepfakeGuard:
             weights_path=weights_path,
         )
         self.visual_weights_loaded = True
-        mode = "trained" if self.ivyfake_multiscale_detector.weights_loaded else "zero-shot"
-        print(f"Multi-scale IvyFake detector initialized (mode={mode})")
 
     def _init_d3(self, encoder: str = "xclip-16") -> None:
         """Initialize D3 detector (training-free, second-order temporal features)."""
         self.d3_detector = D3Detector(encoder_name=encoder, device=self.device)
-        # Training-free, uses pretrained encoders
         self.visual_weights_loaded = True
-        print(f"D3 detector initialized ({encoder} encoder)")
 
-    def set_detector(self, detector_type: Literal["dinov3", "resnet18", "ivyfake", "ivyfake-multiscale", "d3"], weights_path: Optional[str] = None) -> None:
+    def set_detector(
+        self,
+        detector_type: Literal["dinov3", "resnet18", "ivyfake", "ivyfake-multiscale", "d3"],
+        weights_path: Optional[str] = None,
+    ) -> None:
         """
         Switch detector backend.
         
@@ -147,17 +142,13 @@ class DeepfakeGuard:
             weights_path: Path to weights (used for dinov3 and ivyfake)
         """
         if detector_type == self.detector_type:
-            print(f"Already using {detector_type} detector")
             return
             
-        print(f"Switching detector from {self.detector_type} to {detector_type}")
         self.detector_type = detector_type
-        
-        # Clear existing pipelines
+
+        # Reset all detector handles
         self._pipelines.clear()
         self._model_info.clear()
-        
-        # Reset detectors
         self.visual_detector = None
         self.face_cropper = None
         self.resnet_detector = None
@@ -193,16 +184,17 @@ class DeepfakeGuard:
     def load_visual_weights(self, path: str) -> None:
         """Load weights for DINOv3 detector."""
         if self.detector_type != "dinov3":
-            print(f"Warning: Cannot load weights for {self.detector_type} detector")
+            import warnings
+            warnings.warn(f"load_visual_weights is only applicable to the dinov3 detector (current: {self.detector_type}).")
             return
             
         if os.path.exists(path):
             load_weights(self.visual_detector, path)
             self.visual_weights_loaded = True
-            print(f"Visual weights loaded from {path}")
             return
 
-        print(f"Warning: Weights file not found at {path}")
+        import warnings
+        warnings.warn(f"Weights file not found: {path}")
 
     def detect_video(self, video_path: str) -> Dict[str, Any]:
         """Run the full detection pipeline on a video file."""

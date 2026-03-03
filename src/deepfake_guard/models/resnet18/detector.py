@@ -44,8 +44,8 @@ class ResNet18Detector(nn.Module):
         self.model = create_model("resnet18", pretrained=True, num_classes=2)
         self.model.eval()
         self.model.to(device)
-        
-        # Preprocessing (ImageNet stats)
+
+        # Preprocessing (ImageNet normalisation)
         self.transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Resize((224, 224)),
@@ -54,9 +54,7 @@ class ResNet18Detector(nn.Module):
                 std=[0.229, 0.224, 0.225]
             )
         ])
-        
-        print(f"Loaded ResNet18 detector on {device}")
-    
+
     def extract_frames(self, video_path: str) -> list:
         """Uniformly sample frames from video."""
         cap = cv2.VideoCapture(video_path)

@@ -166,7 +166,6 @@ class D3Detector:
             loss_type=loss_type,
             device=device,
         )
-        print(f"D3 Detector initialized  encoder={self.encoder_name}  threshold={self.threshold}")
 
     # ------------------------------------------------------------------
     # Frame extraction
@@ -219,8 +218,6 @@ class D3Detector:
         _, dis_2nd_avg_tensor, volatility_tensor = self.model(batch)
         volatility = float(volatility_tensor.item())
         dis_2nd_avg = float(dis_2nd_avg_tensor.item())
-        print(f"D3 debug: volatility={volatility:.4f}  dis_2nd_avg={dis_2nd_avg:.4f}  "
-              f"threshold={self.threshold}  frames={len(frames)}")
 
         # Higher volatility -> real; lower -> AI-generated.
         # Score is a sigmoid centred at the threshold so it:

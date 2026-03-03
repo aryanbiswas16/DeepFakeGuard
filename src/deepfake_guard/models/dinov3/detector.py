@@ -30,7 +30,11 @@ class Detector(nn.Module):
         super().__init__()
         self.device = device
 
-        self.encoder = FrameEncoder(device=device, layernorm_tuning=True)
+        self.encoder = FrameEncoder(
+            device=device,
+            layernorm_tuning=True,
+            unfreeze_last_block=True,
+        )
         self.head = LinearProbe(
             input_dim=self.encoder.embed_dim,
             num_classes=2,

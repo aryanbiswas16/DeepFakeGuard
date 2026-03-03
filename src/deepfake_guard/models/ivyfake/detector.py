@@ -282,7 +282,6 @@ def load_pretrained_ivydetector(
     if weights_path:
         state_dict = torch.load(weights_path, map_location=device)
         model.load_state_dict(state_dict)
-        print(f"Loaded IvyFake weights from {weights_path}")
     model.to(device)
     model.eval()
     return model
@@ -347,9 +346,8 @@ class IvyFakeDetector:
             state_dict = torch.load(weights_path, map_location=device)
             self.model.load_state_dict(state_dict)
             self.weights_loaded = True
-            print(f"IvyFake: loaded trained weights from {weights_path}")
         else:
-            print("IvyFake: no weights — using CLIP zero-shot text-image mode")
+            pass  # Zero-shot mode via CLIP text-image similarity
 
         self.model.to(device)
         self.model.eval()
@@ -481,11 +479,8 @@ class IvyFakeDetector:
         mean_probs = probs.view(batch_size, num_frames, 2).mean(dim=1)  # (B, 2)
         fake_prob = float(mean_probs[0, 1].item())
 
-        # Debug logging
         real_sim_avg = float(sim[:, 0].mean().item())
         fake_sim_avg = float(sim[:, 1].mean().item())
-        print(f"IvyFake ZS: real_sim={real_sim_avg:.3f}  fake_sim={fake_sim_avg:.3f}  "
-              f"P(fake)={fake_prob:.4f}  frames={num_frames}")
 
         return {
             "score": fake_prob,

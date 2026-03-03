@@ -1,4 +1,5 @@
 import os
+import warnings
 import torch
 
 
@@ -14,15 +15,13 @@ def load_weights(target, path):
     like {'head': ..., 'encoder': ...} (as produced by the v3 training script).
     """
     if not os.path.exists(path):
-        print(f"WARNING: Weights file not found at {path}.")
-        print("Running in INITIALIZED (untrained) mode.")
+        warnings.warn(f"Weights file not found at {path} — running in uninitialised mode.")
         return False
 
-    print(f"Loading weights from {path}...")
     try:
         state = torch.load(path, map_location=getattr(target, 'device', 'cpu'))
     except Exception as e:
-        print(f"Error loading file: {e}")
+        warnings.warn(f"Could not load weights file: {e}")
         return False
 
     # If state contains 'head' or 'encoder', try to load accordingly
@@ -34,14 +33,14 @@ def load_weights(target, path):
                     target.head.load_state_dict(state['head'], strict=False)
                     loaded_any = True
                 except Exception as e:
-                    print(f"Failed to load head: {e}")
+                    warnings.warn(f"Failed to load head weights: {e}")
             if hasattr(target, 'encoder') and 'encoder' in state:
                 try:
                     # load encoder tunables only (state['encoder'] may contain only norm layers)
                     target.encoder.model.load_state_dict(state['encoder'], strict=False)
                     loaded_any = True
                 except Exception as e:
-                    print(f"Failed to load encoder params: {e}")
+                    warnings.warn(f"Failed to load encoder weights: {e}")
 
             # If target itself is an nn.Module and top-level state provided
             if not loaded_any and hasattr(target, 'load_state_dict') and isinstance(state, dict):
@@ -59,11 +58,11 @@ def load_weights(target, path):
                 target.load_state_dict(state, strict=False)
                 return True
             except Exception as e:
-                print(f"Error applying state_dict: {e}")
+                warnings.warn(f"Failed to apply state dict: {e}")
                 return False
 
     except Exception as e:
-        print(f"Unexpected error while loading weights: {e}")
+        warnings.warn(f"Unexpected error loading weights: {e}")
         return False
 
     return False

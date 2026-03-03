@@ -203,7 +203,6 @@ def load_multiscale_detector(
     if weights_path:
         state_dict = torch.load(weights_path, map_location=device)
         model.load_state_dict(state_dict)
-        print(f"Loaded multi-scale weights from {weights_path}")
     model.to(device)
     model.eval()
     return model
@@ -254,9 +253,6 @@ class MultiScaleIvyFakeDetector:
             state_dict = torch.load(weights_path, map_location=device)
             self.model.load_state_dict(state_dict)
             self.weights_loaded = True
-            print(f"Multi-scale IvyFake: loaded weights from {weights_path}")
-        else:
-            print("Multi-scale IvyFake: no weights — using zero-shot mode")
 
         self.model.to(device)
         self.model.eval()
