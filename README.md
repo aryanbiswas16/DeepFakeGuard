@@ -1,19 +1,19 @@
 # DeepFakeGuard v0.4.0
 
-A multimodal Python library for deepfake detection with **four switchable detector backends**, a Streamlit demo UI, and a FastAPI server — ready for research and conference demos.
+A multimodal Python library for deepfake detection with **five switchable detector backends** — ready for research and conference demos.
 
 ---
 
 ## Detectors
 
-| | DINOv3 | ResNet18 | IvyFake | D3 |
-|---|---|---|---|---|
-| **Architecture** | ViT-B/16 | CNN | CLIP ViT-B/32 | Encoder-agnostic |
-| **Method** | Face-based | Full-frame | Temporal + spatial artifacts | Second-order temporal features |
-| **Training** | Fine-tuned on deepfakes | Pretrained ImageNet | Pretrained CLIP | **Training-free** |
-| **Accuracy** | 0.88+ AUROC | Baseline | Good | Varies by encoder |
-| **Weights required** | ✅ Yes | ❌ No | ❌ No | ❌ No |
-| **Paper** | DINOv2 (Meta, 2023) | — | IvyFake (2024) | ICCV 2025 |
+| | DINOv3 | ResNet18 | IvyFake | D3 | LipFD |
+|---|---|---|---|---|---|
+| **Architecture** | ViT-B/16 | CNN | CLIP ViT-B/32 | Encoder-agnostic | CLIP ViT-L/14 + ResNet-50 |
+| **Method** | Face-based | Full-frame | Temporal + spatial artifacts | Second-order temporal features | Audio-visual lip-sync |
+| **Training** | Fine-tuned on deepfakes | Pretrained ImageNet | Pretrained CLIP | **Training-free** | Trained on lip-sync fakes |
+| **Accuracy** | 0.88+ AUROC | Baseline | Good | Varies by encoder | 0.962 AUROC (FakeAVCeleb) |
+| **Weights required** | ✅ Yes | ❌ No | ❌ No | ❌ No | ✅ Yes (1.68 GB) |
+| **Paper** | DINOv2 (Meta, 2023) | — | IvyFake (2024) | ICCV 2025 | NeurIPS 2024 |
 
 ---
 
@@ -75,6 +75,10 @@ result2 = guard.detect_video("video.mp4")
 # DINOv3 — highest accuracy (requires weights)
 guard.set_detector("dinov3", weights_path="weights/dinov3_best_v3.pth")
 result3 = guard.detect_video("video.mp4")
+
+# LipFD — audio-visual lip-sync detection (requires weights)
+guard.set_detector("lipfd", weights_path="weights/lipfd_ckpt.pth")
+result4 = guard.detect_video("video.mp4")
 ```
 
 ### Result format
@@ -93,6 +97,32 @@ result3 = guard.detect_video("video.mp4")
     "errors": []
 }
 ```
+
+---
+
+## LipFD Detector — Audio-Visual Lip-Sync Detection
+
+LipFD (*Lip Forgery Detection*, Liu et al. NeurIPS 2024) detects **lip-sync deepfakes** by
+analysing the temporal consistency between audio and visual lip movements.
+
+- **Dual pathway**: CLIP ViT-L/14 (global audio-visual features) + Region-Aware ResNet-50 (multi-scale spatial attention)
+- **Input**: Mel-spectrogram + 5-frame composite image (1000×2500)
+- **Weights**: `weights/lipfd_ckpt.pth` (1.68 GB) — download from [AaronComo/LipFD](https://github.com/AaronComo/LipFD)
+
+```python
+from deepfake_guard.models.lipfd import LipFDDetector
+
+det = LipFDDetector(weights_path="weights/lipfd_ckpt.pth")
+result = det.predict_video("video.mp4")
+```
+
+**FakeAVCeleb v1.2 benchmark** (250 samples per class):
+
+| Subset | Accuracy | AUROC |
+|--------|----------|-------|
+| FakeVideo-FakeAudio | **91.2%** | **0.962** |
+| FakeVideo-RealAudio | 75.2% | 0.821 |
+| RealVideo-RealAudio (specificity) | 87.6% TNR | — |
 
 ---
 
@@ -150,14 +180,15 @@ deepfake-guard/
 │   │   ├── dinov3/            # ViT-B/16 face-based detector
 │   │   ├── resnet18/          # CNN full-frame detector
 │   │   ├── ivyfake/           # CLIP explainable detector
-│   │   └── d3/                # Training-free temporal detector (ICCV 2025)
+│   │   ├── d3/                # Training-free temporal detector (ICCV 2025)
+│   │   └── lipfd/             # Audio-visual lip-sync detector (NeurIPS 2024)
 │   └── utils/                 # Face cropping, preprocessing, video I/O, weights
 ├── app/main.py                # FastAPI server
 ├── ui/
 │   ├── enhanced_gui.py        # Streamlit demo (standalone, no server needed)
 │   └── demo_frontend.py       # Streamlit client for the API server
 ├── weights/                   # Place trained weights here
-├── test_detectors.py          # Smoke test for all 4 detectors
+├── test_detectors.py          # Smoke test for all 5 detectors
 └── pyproject.toml
 ```
 
@@ -219,6 +250,17 @@ guard.register_modality("audio", my_audio_fn, "Audio deepfake detection")
   title  = {DeepFakeGuard: A Unified Multi-Detector Framework for Deepfake Detection},
   url    = {https://github.com/aryanbiswas16/DeepFakeGuard},
   year   = {2026}
+}
+```
+
+**LipFD (NeurIPS 2024):**
+```bibtex
+@inproceedings{liu2024lipfd,
+  title     = {Lips Are Lying: Spotting the Temporal Inconsistency between Audio and Visual in Lip-Syncing DeepFakes},
+  author    = {Liu, Weian and others},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  year      = {2024},
+  url       = {https://arxiv.org/abs/2401.15668}
 }
 ```
 
