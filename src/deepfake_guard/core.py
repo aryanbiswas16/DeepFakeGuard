@@ -11,6 +11,7 @@ from .models.resnet18.detector import ResNet18Detector, detect_video_resnet18
 from .models.ivyfake.detector import IvyFakeDetector
 from .models.ivyfake.multiscale_detector import MultiScaleIvyFakeDetector
 from .models.d3.detector import D3Detector
+from .models.lipfd.detector import LipFDDetector
 from .types import ModalityResult
 from .utils.face_crop import FaceCropper
 from .utils.preprocess import simulate_compression, stack_frames
@@ -31,13 +32,14 @@ class DeepfakeGuard:
     - "ivyfake": IvyFake detector (CLIP-based with temporal/spatial analysis)
     - "ivyfake-multiscale": Multi-scale IvyFake (temporal pyramid at 0.5/1.0/2.0 fps)
     - "d3": D3 detector (training-free, second-order temporal features)
+    - "lipfd": LipFD detector (audio-visual lip-sync detection, NeurIPS 2024)
     """
 
     def __init__(
         self,
         weights_path: Optional[str] = None,
         device: Optional[str] = None,
-        detector_type: Literal["dinov3", "resnet18", "ivyfake", "ivyfake-multiscale", "d3"] = "dinov3"
+        detector_type: Literal["dinov3", "resnet18", "ivyfake", "ivyfake-multiscale", "d3", "lipfd"] = "dinov3"
     ):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.detector_type = detector_type
@@ -53,6 +55,7 @@ class DeepfakeGuard:
         self.ivyfake_detector = None
         self.ivyfake_multiscale_detector = None
         self.d3_detector = None
+        self.lipfd_detector = None
         self.visual_weights_loaded = False
 
         if detector_type == "dinov3":
@@ -65,6 +68,8 @@ class DeepfakeGuard:
             self._init_ivyfake_multiscale(weights_path)
         elif detector_type == "d3":
             self._init_d3()
+        elif detector_type == "lipfd":
+            self._init_lipfd(weights_path)
         else:
             raise ValueError(f"Unknown detector_type: {detector_type}")
 
@@ -129,17 +134,30 @@ class DeepfakeGuard:
         self.d3_detector = D3Detector(encoder_name=encoder, device=self.device)
         self.visual_weights_loaded = True
 
+    def _init_lipfd(self, weights_path: Optional[str] = None) -> None:
+        """Initialize LipFD detector (audio-visual lip-sync deepfake detection, NeurIPS 2024).
+
+        Requires pretrained weights (~1.68 GB). Download from:
+          https://github.com/AaronComo/LipFD
+        """
+        if weights_path and not os.path.exists(weights_path):
+            import warnings
+            warnings.warn(f"LipFD weights not found at '{weights_path}' — running without weights (accuracy will be poor).")
+            weights_path = None
+        self.lipfd_detector = LipFDDetector(weights_path=weights_path, device=self.device)
+        self.visual_weights_loaded = weights_path is not None
+
     def set_detector(
         self,
-        detector_type: Literal["dinov3", "resnet18", "ivyfake", "ivyfake-multiscale", "d3"],
+        detector_type: Literal["dinov3", "resnet18", "ivyfake", "ivyfake-multiscale", "d3", "lipfd"],
         weights_path: Optional[str] = None,
     ) -> None:
         """
         Switch detector backend.
         
         Args:
-            detector_type: "dinov3", "resnet18", "ivyfake", "ivyfake-multiscale", or "d3"
-            weights_path: Path to weights (used for dinov3 and ivyfake)
+            detector_type: "dinov3", "resnet18", "ivyfake", "ivyfake-multiscale", "d3", or "lipfd"
+            weights_path: Path to weights (used for dinov3, ivyfake, and lipfd)
         """
         if detector_type == self.detector_type:
             return
@@ -155,6 +173,7 @@ class DeepfakeGuard:
         self.ivyfake_detector = None
         self.ivyfake_multiscale_detector = None
         self.d3_detector = None
+        self.lipfd_detector = None
         self.visual_weights_loaded = False
         
         # Reinitialize
@@ -168,6 +187,8 @@ class DeepfakeGuard:
             self._init_ivyfake_multiscale(weights_path)
         elif detector_type == "d3":
             self._init_d3()
+        elif detector_type == "lipfd":
+            self._init_lipfd(weights_path)
             
         # Re-register visual modality
         self.register_modality(
@@ -236,6 +257,7 @@ class DeepfakeGuard:
     # ResNet18 + IvyFake have untrained classification heads → low trust.
     _DETECTOR_TRUST: Dict[str, float] = {
         "dinov3":   1.0,
+        "lipfd":    0.85,             # NeurIPS 2024, trained on lip-sync deepfakes; 91.2% acc on FakeAVCeleb
         "d3":       0.6,
         "ivyfake":  0.5,              # principled CLIP cosine-sim signal, not trained on deepfakes
         "ivyfake-multiscale": 0.55,   # multi-scale temporal pyramid — slightly better coverage
@@ -282,6 +304,8 @@ class DeepfakeGuard:
             return self._run_ivyfake_multiscale_analysis(video_path)
         elif self.detector_type == "d3":
             return self._run_d3_analysis(video_path)
+        elif self.detector_type == "lipfd":
+            return self._run_lipfd_analysis(video_path)
         else:
             return {"error": f"Unknown detector type: {self.detector_type}"}
 
@@ -356,3 +380,25 @@ class DeepfakeGuard:
             label=result["label"],
             details=result["details"]
         ).__dict__
+
+    def _run_lipfd_analysis(self, video_path: str) -> Dict[str, Any]:
+        """LipFD audio-visual lip-sync deepfake analysis (NeurIPS 2024)."""
+        if self.lipfd_detector is None:
+            return {"error": "LipFD detector not initialised"}
+
+        try:
+            result = self.lipfd_detector.predict_video(video_path)
+        except Exception as exc:
+            return {"error": f"LipFD analysis failed: {exc}"}
+
+        if result.get("overall_label") == "ERROR":
+            errors = result.get("errors", ["Unknown LipFD error"])
+            return {"error": "; ".join(errors)}
+
+        score = float(result.get("overall_score", 0.0))
+        label = result.get("overall_label", "UNKNOWN")
+        details = result.get("modality_results", {}).get("audio_visual", {}).get("details", {})
+        details["detector_type"] = "lipfd"
+        details["model"] = result.get("model_info", {})
+
+        return ModalityResult(score=score, label=label, details=details).__dict__

@@ -2,7 +2,7 @@
 DeepFakeGuard API Server
 FastAPI backend for multi-detector deepfake detection
 
-Supports: DINOv3, ResNet18, IvyFake, D3
+Supports: DINOv3, ResNet18, IvyFake, D3, LipFD
 """
 
 from fastapi import FastAPI, UploadFile, File, Query
@@ -21,6 +21,7 @@ app = FastAPI(
 # Configuration
 DEFAULT_DETECTOR = os.environ.get("DEEPFAKE_GUARD_DETECTOR", "dinov3")
 WEIGHTS_PATH = os.environ.get("DEEPFAKE_GUARD_WEIGHTS", "weights/dinov3_best_v3.pth")
+LIPFD_WEIGHTS_PATH = os.environ.get("DEEPFAKE_GUARD_LIPFD_WEIGHTS", "weights/lipfd_ckpt.pth")
 
 # Global guard instance (will be initialized on first use)
 _guard = None
@@ -41,9 +42,15 @@ def get_guard(detector_type: str = "dinov3"):
     if _guard is None or _current_detector != detector_type:
         print(f"Initializing DeepfakeGuard with {detector_type} detector...")
         
-        weights = WEIGHTS_PATH if detector_type == "dinov3" else None
+        if detector_type == "dinov3":
+            weights = WEIGHTS_PATH if os.path.exists(WEIGHTS_PATH) else None
+        elif detector_type == "lipfd":
+            weights = LIPFD_WEIGHTS_PATH if os.path.exists(LIPFD_WEIGHTS_PATH) else None
+        else:
+            weights = None
+
         _guard = DeepfakeGuard(
-            weights_path=weights if weights and os.path.exists(weights) else None,
+            weights_path=weights,
             detector_type=detector_type
         )
         _current_detector = detector_type
@@ -55,7 +62,7 @@ async def detect_endpoint(
     file: UploadFile = File(..., description="Video file to analyze (MP4, MOV, AVI, MKV)"),
     detector: str = Query(
         default="dinov3",
-        enum=["dinov3", "resnet18", "ivyfake", "d3"],
+        enum=["dinov3", "resnet18", "ivyfake", "d3", "lipfd"],
         description="Detector backend to use"
     )
 ):
@@ -64,7 +71,7 @@ async def detect_endpoint(
     
     Args:
         file: Video file to analyze
-        detector: Detector backend ("dinov3", "resnet18", "ivyfake", "d3")
+        detector: Detector backend ("dinov3", "resnet18", "ivyfake", "d3", "lipfd")
     
     Returns:
         Detection results with score, label, and detailed analysis
@@ -106,9 +113,9 @@ def read_root():
         "status": "DeepfakeGuard API is running",
         "version": "0.4.0",
         "current_detector": _current_detector or DEFAULT_DETECTOR,
-        "available_detectors": ["dinov3", "resnet18", "ivyfake", "d3"],
+        "available_detectors": ["dinov3", "resnet18", "ivyfake", "d3", "lipfd"],
         "endpoints": {
-            "detect": "POST /detect?detector=dinov3|resnet18|ivyfake|d3",
+            "detect": "POST /detect?detector=dinov3|resnet18|ivyfake|d3|lipfd",
             "health": "GET /",
             "switch_detector": "GET /switch/{detector_type}",
             "list_detectors": "GET /detectors"
@@ -122,14 +129,14 @@ def switch_detector(detector_type: str):
     Switch the active detector backend.
     
     Args:
-        detector_type: "dinov3", "resnet18", "ivyfake", or "d3"
+        detector_type: "dinov3", "resnet18", "ivyfake", "d3", or "lipfd"
     
     Returns:
         Status of the switch operation
     """
     global _guard, _current_detector
     
-    valid_detectors = ["dinov3", "resnet18", "ivyfake", "d3"]
+    valid_detectors = ["dinov3", "resnet18", "ivyfake", "d3", "lipfd"]
     
     if detector_type not in valid_detectors:
         return JSONResponse(
@@ -210,6 +217,22 @@ def list_detectors():
                 "speed": "Fast",
                 "best_for": "Training-free detection with temporal consistency analysis",
                 "citation": "Zheng et al., ICCV 2025"
+            },
+            "lipfd": {
+                "name": "LipFD — Lip Forgery Detection",
+                "description": "Audio-visual lip-sync deepfake detection via CLIP + Region-Aware ResNet-50 (NeurIPS 2024)",
+                "requires_weights": True,
+                "features": [
+                    "CLIP ViT-L/14 global audio-visual features",
+                    "Region-Aware ResNet-50 with multi-scale attention",
+                    "RA-Loss (lip-region focus)",
+                    "Mel-spectrogram + frame composite input"
+                ],
+                "accuracy": "91.2% acc / 0.962 AUROC on FakeAVCeleb FakeVideo-FakeAudio",
+                "speed": "Moderate (~0.85s/video on GPU)",
+                "best_for": "Lip-sync deepfake detection (Wav2Lip-era methods)",
+                "citation": "Liu et al., NeurIPS 2024 (arXiv:2401.15668)",
+                "weights": "weights/lipfd_ckpt.pth (1.68 GB)"
             }
         }
     }

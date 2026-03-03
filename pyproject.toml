@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "deepfake_guard"
 version = "0.4.0"
-description = "Multimodal Deepfake Detection Library with Multiple Detector Backends (DINOv3, ResNet18, IvyFake, D3)"
+description = "Multimodal Deepfake Detection Library with Multiple Detector Backends (DINOv3, ResNet18, IvyFake, D3, LipFD)"
 readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT"}
 authors = [
     {name = "Aryan Biswas", email = "aryanbiswas16@gmail.com"},
 ]
-keywords = ["deepfake", "detection", "computer-vision", "pytorch", "dinov3", "d3"]
+keywords = ["deepfake", "detection", "computer-vision", "pytorch", "dinov3", "d3", "lipfd"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
@@ -34,7 +34,9 @@ dependencies = [
     "timm>=0.9.0",
     "facenet-pytorch>=2.5.0",
     "tqdm>=4.65.0",
-    "transformers>=4.30.0"
+    "transformers>=4.30.0",
+    "librosa>=0.10.0",
+    "packaging"
 ]
 
 [project.optional-dependencies]

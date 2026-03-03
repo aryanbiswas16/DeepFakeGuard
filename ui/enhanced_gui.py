@@ -1,6 +1,6 @@
 """
 Enhanced Deepfake Guard GUI with detector toggle
-Supports DINOv3, ResNet18, IvyFake, and D3 detectors
+Supports DINOv3, ResNet18, IvyFake, D3, and LipFD detectors
 """
 
 import streamlit as st
@@ -101,12 +101,13 @@ st.sidebar.header("⚙️ Detector Settings")
 
 detector_type = st.sidebar.selectbox(
     "Select Detector",
-    options=["dinov3", "resnet18", "ivyfake", "d3", "all"],
+    options=["dinov3", "resnet18", "ivyfake", "d3", "lipfd", "all"],
     format_func=lambda x: {
         "dinov3":   "🧠 DINOv3 (ViT-B/16 - 0.88 AUROC)",
         "resnet18": "🎯 ResNet18 (CNN - Pretrained)",
         "ivyfake":  "🌿 IvyFake (CLIP - Explainable)",
         "d3":       "📊 D3 (Training-Free - Temporal)",
+        "lipfd":    "🎤 LipFD (Audio-Visual - NeurIPS 2024)",
         "all":      "🔀 All Detectors (Ensemble)"
     }[x],
     help="Switch between different detection backends, or run all for an ensemble comparison"
@@ -156,14 +157,28 @@ detector_info = {
         "pros": "No training needed, analyzes temporal consistency",
         "cons": "Sensitivity varies by video type",
         "requires_weights": False
+    },
+    "lipfd": {
+        "name": "LipFD — Lip Forgery Detection",
+        "description": "Audio-visual lip-sync deepfake detection (NeurIPS 2024)",
+        "features": [
+            "CLIP ViT-L/14 global audio-visual features",
+            "Region-Aware ResNet-50 (multi-scale attention)",
+            "Mel-spectrogram + frame composite input",
+            "RA-Loss (lip-region focus)",
+            "91.2% acc / 0.962 AUROC on FakeAVCeleb"
+        ],
+        "pros": "Only audio-visual detector — catches lip-sync fakes others miss",
+        "cons": "Requires 1.68 GB weights; modern Wav2Lip may evade",
+        "requires_weights": True
     }
 }
 
 # Show detector info
 if detector_type == "all":
     st.sidebar.markdown("**🔀 Ensemble Mode**")
-    st.sidebar.markdown("_Runs all 4 detectors and compares their verdicts._")
-    st.sidebar.markdown("- DINOv3 · ResNet18 · IvyFake · D3")
+    st.sidebar.markdown("_Runs all 5 detectors and compares their verdicts._")
+    st.sidebar.markdown("- DINOv3 · ResNet18 · IvyFake · D3 · LipFD")
     st.sidebar.markdown("✅ **Pros:** Cross-model agreement, richer analysis")
     st.sidebar.markdown("⚠️ **Cons:** Slower — loads all models")
 else:
@@ -213,7 +228,12 @@ def _load_single_detector(det_type: str, d3_enc: str = "xclip-16"):
         sys.path.insert(0, str(src_path))
     from deepfake_guard import DeepfakeGuard
     try:
-        guard = DeepfakeGuard(detector_type=det_type)
+        # LipFD needs weights path from well-known location
+        weights = None
+        if det_type == "lipfd":
+            candidate = Path(__file__).resolve().parents[1] / "weights" / "lipfd_ckpt.pth"
+            weights = str(candidate) if candidate.exists() else None
+        guard = DeepfakeGuard(detector_type=det_type, weights_path=weights)
         if det_type == "d3" and d3_enc:
             guard._init_d3(encoder=d3_enc)
         return guard, None
@@ -222,9 +242,9 @@ def _load_single_detector(det_type: str, d3_enc: str = "xclip-16"):
 
 
 def _load_all_detectors(d3_enc: str = "xclip-16"):
-    """Load all 4 detectors, each using the shared cache."""
+    """Load all 5 detectors, each using the shared cache."""
     guards, errors = {}, {}
-    for t in ["dinov3", "resnet18", "ivyfake", "d3"]:
+    for t in ["dinov3", "resnet18", "ivyfake", "d3", "lipfd"]:
         g, e = _load_single_detector(t, d3_enc)
         if e:
             errors[t] = e
@@ -235,7 +255,7 @@ def _load_all_detectors(d3_enc: str = "xclip-16"):
 
 # Initialise / retrieve from cache
 if detector_type == "all":
-    with st.spinner("Loading all 4 detectors (results are cached after first run)..."):
+    with st.spinner("Loading all 5 detectors (results are cached after first run)..."):
         guards, load_errors = _load_all_detectors(d3_encoder)
     for det, err in load_errors.items():
         st.sidebar.warning(f"⚠️ {det.upper()} failed: {err}")
@@ -318,7 +338,7 @@ if uploaded_file is not None:
                         fake_votes = sum(1 for lbl in labels.values() if lbl == "FAKE")
 
                         # Weighted ensemble score matching core.py trust priors
-                        _TRUST = {"dinov3": 1.0, "d3": 0.6, "ivyfake": 0.5, "resnet18": 0.2}
+                        _TRUST = {"dinov3": 1.0, "lipfd": 0.85, "d3": 0.6, "ivyfake": 0.5, "resnet18": 0.2}
                         w_sum, w_total = 0.0, 0.0
                         for n, s in scores.items():
                             t = _TRUST.get(n, 0.5)
@@ -481,8 +501,8 @@ else:
     
     st.divider()
     
-    # Show all 4 detector options
-    col1, col2, col3, col4 = st.columns(4)
+    # Show all 5 detector options
+    col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
         st.subheader("🧠 DINOv3")
@@ -540,6 +560,20 @@ else:
         **Requires:** No weights
         """)
 
+    with col5:
+        st.subheader("🎤 LipFD")
+        st.markdown("""
+        **Best for:** Lip-sync deepfakes
+        
+        **Features:**
+        - Audio-visual analysis
+        - CLIP + ResNet-50
+        - Mel-spectrogram input
+        - NeurIPS 2024
+        
+        **Requires:** weights/lipfd_ckpt.pth
+        """)
+
 # Footer
 st.divider()
-st.caption("Deepfake Guard v0.4.0 | Multi-detector support: DINOv3, ResNet18, IvyFake, D3")
+st.caption("Deepfake Guard v0.4.0 | Multi-detector support: DINOv3, ResNet18, IvyFake, D3, LipFD")
