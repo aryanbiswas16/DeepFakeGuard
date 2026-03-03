@@ -146,3 +146,32 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
+# ── Project-specific ignores ─────────────────────────────────────────────────
+# Benchmark data & results (video files, JSON outputs)
+benchmark_data/
+benchmark_results*.json
+
+# One-off setup/download scripts
+setup_*.py
+setup_*.sh
+download_*.py
+
+# UI / server demos (not part of the library)
+app/
+ui/
+
+# IDE / editor
+.vscode/
+.idea/
+
+# Weights at repo root (canonical copy lives inside the package)
+/weights/
+
+# Paper artefacts
+*.pdf
+*.tex
+
+# Large model files (keep only inside src/deepfake_guard/weights/)
+*.pth
+!src/deepfake_guard/weights/*.pth
+
