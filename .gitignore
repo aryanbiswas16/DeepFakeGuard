@@ -113,6 +113,10 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
+# Model weights (large files — download separately)
+# Note: weights/dinov3_best_v3.pth is tracked intentionally (28 MB)
+weights/lipfd_ckpt.pth
+
 # Environments
 .env
 .venv
