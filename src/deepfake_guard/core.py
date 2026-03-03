@@ -88,7 +88,7 @@ class DeepfakeGuard:
         self.visual_detector = DINOv3Detector(device=self.device)
         self.face_cropper = FaceCropper(
             device=self.device,
-            padding_ratio=0.25,
+            padding_ratio=0.3,
         )
 
         resolved = None
