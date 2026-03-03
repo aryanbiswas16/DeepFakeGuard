@@ -9,6 +9,7 @@ import torch
 from .models.dinov3.detector import Detector as DINOv3Detector
 from .models.resnet18.detector import ResNet18Detector, detect_video_resnet18
 from .models.ivyfake.detector import IvyFakeDetector
+from .models.ivyfake.multiscale_detector import MultiScaleIvyFakeDetector
 from .models.d3.detector import D3Detector
 from .types import ModalityResult
 from .utils.face_crop import FaceCropper
@@ -28,6 +29,7 @@ class DeepfakeGuard:
     - "dinov3": DINOv3-based detector (face cropping, 0.88+ AUROC)
     - "resnet18": ResNet18-based detector (full frames, pretrained ImageNet)
     - "ivyfake": IvyFake detector (CLIP-based with temporal/spatial analysis)
+    - "ivyfake-multiscale": Multi-scale IvyFake (temporal pyramid at 0.5/1.0/2.0 fps)
     - "d3": D3 detector (training-free, second-order temporal features)
     """
 
@@ -35,7 +37,7 @@ class DeepfakeGuard:
         self,
         weights_path: Optional[str] = None,
         device: Optional[str] = None,
-        detector_type: Literal["dinov3", "resnet18", "ivyfake", "d3"] = "dinov3"
+        detector_type: Literal["dinov3", "resnet18", "ivyfake", "ivyfake-multiscale", "d3"] = "dinov3"
     ):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.detector_type = detector_type
@@ -49,6 +51,7 @@ class DeepfakeGuard:
         self.face_cropper = None
         self.resnet_detector = None
         self.ivyfake_detector = None
+        self.ivyfake_multiscale_detector = None
         self.d3_detector = None
         self.visual_weights_loaded = False
 
@@ -57,7 +60,9 @@ class DeepfakeGuard:
         elif detector_type == "resnet18":
             self._init_resnet18()
         elif detector_type == "ivyfake":
-            self._init_ivyfake()
+            self._init_ivyfake(weights_path)
+        elif detector_type == "ivyfake-multiscale":
+            self._init_ivyfake_multiscale(weights_path)
         elif detector_type == "d3":
             self._init_d3()
         else:
@@ -106,12 +111,25 @@ class DeepfakeGuard:
         self.visual_weights_loaded = True
         print("ResNet18 detector initialized (pretrained ImageNet weights)")
 
-    def _init_ivyfake(self) -> None:
+    def _init_ivyfake(self, weights_path: Optional[str] = None) -> None:
         """Initialize IvyFake detector (CLIP-based with explainable features)."""
-        self.ivyfake_detector = IvyFakeDetector(device=self.device)
-        # Uses pretrained CLIP weights, no custom weights to load
+        self.ivyfake_detector = IvyFakeDetector(
+            device=self.device,
+            weights_path=weights_path,
+        )
         self.visual_weights_loaded = True
-        print("IvyFake detector initialized (CLIP-ViT-B/32 backbone)")
+        mode = "trained" if self.ivyfake_detector.weights_loaded else "zero-shot"
+        print(f"IvyFake detector initialized (CLIP-ViT-B/32, mode={mode})")
+
+    def _init_ivyfake_multiscale(self, weights_path: Optional[str] = None) -> None:
+        """Initialize multi-scale IvyFake detector (temporal pyramid)."""
+        self.ivyfake_multiscale_detector = MultiScaleIvyFakeDetector(
+            device=self.device,
+            weights_path=weights_path,
+        )
+        self.visual_weights_loaded = True
+        mode = "trained" if self.ivyfake_multiscale_detector.weights_loaded else "zero-shot"
+        print(f"Multi-scale IvyFake detector initialized (mode={mode})")
 
     def _init_d3(self, encoder: str = "xclip-16") -> None:
         """Initialize D3 detector (training-free, second-order temporal features)."""
@@ -120,13 +138,13 @@ class DeepfakeGuard:
         self.visual_weights_loaded = True
         print(f"D3 detector initialized ({encoder} encoder)")
 
-    def set_detector(self, detector_type: Literal["dinov3", "resnet18", "ivyfake", "d3"], weights_path: Optional[str] = None) -> None:
+    def set_detector(self, detector_type: Literal["dinov3", "resnet18", "ivyfake", "ivyfake-multiscale", "d3"], weights_path: Optional[str] = None) -> None:
         """
         Switch detector backend.
         
         Args:
-            detector_type: "dinov3", "resnet18", "ivyfake", or "d3"
-            weights_path: Path to DINOv3 weights (only used for dinov3)
+            detector_type: "dinov3", "resnet18", "ivyfake", "ivyfake-multiscale", or "d3"
+            weights_path: Path to weights (used for dinov3 and ivyfake)
         """
         if detector_type == self.detector_type:
             print(f"Already using {detector_type} detector")
@@ -144,6 +162,7 @@ class DeepfakeGuard:
         self.face_cropper = None
         self.resnet_detector = None
         self.ivyfake_detector = None
+        self.ivyfake_multiscale_detector = None
         self.d3_detector = None
         self.visual_weights_loaded = False
         
@@ -153,7 +172,9 @@ class DeepfakeGuard:
         elif detector_type == "resnet18":
             self._init_resnet18()
         elif detector_type == "ivyfake":
-            self._init_ivyfake()
+            self._init_ivyfake(weights_path)
+        elif detector_type == "ivyfake-multiscale":
+            self._init_ivyfake_multiscale(weights_path)
         elif detector_type == "d3":
             self._init_d3()
             
@@ -224,8 +245,9 @@ class DeepfakeGuard:
     _DETECTOR_TRUST: Dict[str, float] = {
         "dinov3":   1.0,
         "d3":       0.6,
-        "ivyfake":  0.5,   # principled CLIP cosine-sim signal, not trained on deepfakes
-        "resnet18": 0.2,   # untrained head on ImageNet features
+        "ivyfake":  0.5,              # principled CLIP cosine-sim signal, not trained on deepfakes
+        "ivyfake-multiscale": 0.55,   # multi-scale temporal pyramid — slightly better coverage
+        "resnet18": 0.2,              # untrained head on ImageNet features
     }
 
     def _aggregate_scores(self, modality_results: Dict[str, Dict[str, Any]]) -> float:
@@ -264,6 +286,8 @@ class DeepfakeGuard:
             return self._run_resnet18_analysis(video_path)
         elif self.detector_type == "ivyfake":
             return self._run_ivyfake_analysis(video_path)
+        elif self.detector_type == "ivyfake-multiscale":
+            return self._run_ivyfake_multiscale_analysis(video_path)
         elif self.detector_type == "d3":
             return self._run_d3_analysis(video_path)
         else:
@@ -317,6 +341,15 @@ class DeepfakeGuard:
     def _run_ivyfake_analysis(self, video_path: str) -> Dict[str, Any]:
         """IvyFake-based visual analysis (CLIP-based with temporal/spatial features)."""
         result = self.ivyfake_detector.predict_video(video_path)
+        return ModalityResult(
+            score=result["score"],
+            label=result["label"],
+            details=result["details"]
+        ).__dict__
+
+    def _run_ivyfake_multiscale_analysis(self, video_path: str) -> Dict[str, Any]:
+        """Multi-scale IvyFake analysis (temporal pyramid at multiple fps)."""
+        result = self.ivyfake_multiscale_detector.predict_video(video_path)
         return ModalityResult(
             score=result["score"],
             label=result["label"],

@@ -1,35 +1,49 @@
 """
 IvyFake-based video detector (CLIP-based explainable AIGC detection)
-Uses CLIP vision encoder with temporal and spatial artifact analyzers
-Original: https://github.com/HamzaKhan760/IvyFakeGenDetector
+
+Faithfully implements the architecture from:
+  https://github.com/HamzaKhan760/IvyFakeGenDetector
+
+Two model variants:
+  - IvyXDetector (full): temporal + spatial analyzers → fusion → classifier
+  - SimplifiedIvyDetector (lightweight): frozen CLIP → MLP classifier
+
+When trained weights are loaded the full model heads produce calibrated
+softmax scores.  Without weights the detector falls back to a zero-shot
+heuristic based on frozen CLIP cosine-similarity and spatial variance.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from transformers import CLIPModel, CLIPProcessor
 
 from ...types import ModalityResult
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Sub-modules (match HamzaKhan760/IvyFakeGenDetector/models/detector.py)
+# ──────────────────────────────────────────────────────────────────────────────
+
 class TemporalArtifactAnalyzer(nn.Module):
     """Analyzes temporal inconsistencies in video frames."""
-    
-    def __init__(self, embed_dim: int = 768):
+
+    def __init__(self, embed_dim: int = 512):
         super().__init__()
         self.temporal_conv = nn.Sequential(
             nn.Conv1d(embed_dim, embed_dim, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.Conv1d(embed_dim, embed_dim, kernel_size=3, padding=1),
-            nn.ReLU()
+            nn.ReLU(),
         )
         self.attention = nn.MultiheadAttention(embed_dim, num_heads=8)
-        
+
     def forward(self, frame_features: torch.Tensor) -> torch.Tensor:
         """
         Args:
@@ -37,32 +51,29 @@ class TemporalArtifactAnalyzer(nn.Module):
         Returns:
             temporal_features: (batch, embed_dim)
         """
-        # Transpose for Conv1d: (batch, embed_dim, num_frames)
-        x = frame_features.transpose(1, 2)
+        x = frame_features.transpose(1, 2)          # (B, D, T) for Conv1d
         x = self.temporal_conv(x)
-        x = x.transpose(1, 2)  # Back to (batch, num_frames, embed_dim)
-        
-        # Self-attention across frames
-        x = x.transpose(0, 1)  # (num_frames, batch, embed_dim)
+        x = x.transpose(1, 2)                       # (B, T, D)
+
+        x = x.transpose(0, 1)                       # (T, B, D) for MHA
         attn_out, _ = self.attention(x, x, x)
-        attn_out = attn_out.transpose(0, 1)  # (batch, num_frames, embed_dim)
-        
-        # Global average pooling
-        return attn_out.mean(dim=1)
+        attn_out = attn_out.transpose(0, 1)          # (B, T, D)
+
+        return attn_out.mean(dim=1)                  # global average pool
 
 
 class SpatialArtifactAnalyzer(nn.Module):
     """Analyzes spatial artifacts in individual frames."""
-    
-    def __init__(self, embed_dim: int = 768):
+
+    def __init__(self, embed_dim: int = 512):
         super().__init__()
         self.spatial_attention = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
             nn.ReLU(),
             nn.Linear(embed_dim, embed_dim),
-            nn.Sigmoid()
+            nn.Sigmoid(),
         )
-        
+
     def forward(self, frame_features: torch.Tensor) -> torch.Tensor:
         """
         Args:
@@ -70,30 +81,26 @@ class SpatialArtifactAnalyzer(nn.Module):
         Returns:
             spatial_features: (batch, embed_dim)
         """
-        # Apply attention and pool
         attention_weights = self.spatial_attention(frame_features)
-        attended_features = frame_features * attention_weights
-        return attended_features.mean(dim=1)
+        attended = frame_features * attention_weights
+        return attended.mean(dim=1)
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Full model (IvyXDetector)
+# ──────────────────────────────────────────────────────────────────────────────
 
 class IvyXDetector(nn.Module):
     """
-    Explainable AIGC detector using a frozen CLIP vision backbone.
+    Unified explainable AIGC detector for images and videos.
+    Architecture from https://github.com/HamzaKhan760/IvyFakeGenDetector:
 
-    The temporal and spatial heads (TemporalArtifactAnalyzer,
-    SpatialArtifactAnalyzer, fusion, classifier) are intentionally bypassed
-    during inference because they are randomly initialised and have no trained
-    weights.  Instead, the detector computes two principled signals directly
-    from the frozen CLIP embeddings:
-
-      * Temporal consistency  — mean cosine similarity between consecutive
-        frame embeddings.  Real videos have high frame-to-frame semantic
-        continuity; AI-generated artefacts cause dips.
-      * Spatial anomaly       — per-frame deviation from the clip-mean
-        embedding across the sequence (Mahalanobis-like outlier score).
-
-    Both signals are fused via a simple calibrated sigmoid to produce a
-    P(fake) value in [0, 1].
+      1. Vision Backbone: CLIP ViT-B/32
+      2. Temporal Analyzer: Conv1d + MultiheadAttention over frame embeddings
+      3. Spatial Analyzer: Learned attention gate per frame
+      4. Fusion Layer: MLP combining temporal and spatial features
+      5. Classification Head: Linear → 2-class logits
+      6. Explanation Head: Linear → 768-d features (for text generation)
     """
 
     def __init__(
@@ -101,25 +108,22 @@ class IvyXDetector(nn.Module):
         model_name: str = "openai/clip-vit-base-patch32",
         num_classes: int = 2,
         embed_dim: int = 512,
-        freeze_backbone: bool = True,
-        device: str = "cpu"
+        freeze_backbone: bool = False,
     ):
         super().__init__()
-        
-        self.device = device
-        
-        # Load CLIP model as vision backbone
+
+        # CLIP vision backbone
         self.clip_model = CLIPModel.from_pretrained(model_name)
         self.processor = CLIPProcessor.from_pretrained(model_name)
-        
+
         if freeze_backbone:
             for param in self.clip_model.parameters():
                 param.requires_grad = False
-        
+
         # Temporal and spatial artifact analyzers
         self.temporal_analyzer = TemporalArtifactAnalyzer(embed_dim)
         self.spatial_analyzer = SpatialArtifactAnalyzer(embed_dim)
-        
+
         # Fusion layer
         self.fusion = nn.Sequential(
             nn.Linear(embed_dim * 2, embed_dim),
@@ -127,252 +131,438 @@ class IvyXDetector(nn.Module):
             nn.Dropout(0.3),
             nn.Linear(embed_dim, embed_dim // 2),
             nn.ReLU(),
-            nn.Dropout(0.2)
+            nn.Dropout(0.2),
         )
-        
+
         # Classification head
         self.classifier = nn.Linear(embed_dim // 2, num_classes)
-        
-        self.to(device)
-        self.eval()
-        
+
+        # Explanation generator (simplified — pooled features → text dim)
+        self.explanation_head = nn.Linear(embed_dim // 2, 768)
+
     def extract_frame_features(self, images: torch.Tensor) -> torch.Tensor:
-        """Extract features from frames using CLIP vision encoder."""
+        """Extract features from frames using CLIP vision encoder.
+
+        Returns projected 512-dim embeddings (not raw 768-dim hidden states).
+        """
         vision_outputs = self.clip_model.vision_model(pixel_values=images)
-        return vision_outputs.pooler_output
-    
-    # Sigmoid sharpness — controls how fast P(fake) transitions around the
-    # temporal-consistency decision boundary.  Tuned so that a ~0.05 drop in
-    # mean cosine similarity below the boundary maps to ~0.75 P(fake).
-    _SIG_K: float = 20.0
-    _TEMPORAL_BOUNDARY: float = 0.85   # mean cos-sim below this → suspicious
+        pooled = vision_outputs.pooler_output          # (N, 768)
+        projected = self.clip_model.visual_projection(pooled)  # (N, 512)
+        return projected
 
     def forward(
         self,
         images: torch.Tensor,
-        return_explanations: bool = False
-    ) -> Dict[str, Any]:
+        return_explanations: bool = False,
+    ) -> Dict[str, torch.Tensor]:
         """
         Args:
-            images: ``(batch, num_frames, C, H, W)`` or ``(batch, C, H, W)``
+            images: (batch, num_frames, C, H, W) or (batch, C, H, W)
+            return_explanations: whether to produce explanation features
 
         Returns:
-            dict with keys ``fake_scores`` ``[B]``, ``temporal_sim`` ``[B]``,
-            ``spatial_anomaly`` ``[B]``, and ``per_frame_fake_probs``.
+            dict with 'logits', 'temporal_features', 'spatial_features',
+            and optionally 'explanation_features'.
         """
-        if images.dim() == 5:  # video
+        # Handle both image and video inputs
+        if images.dim() == 5:
             batch_size, num_frames = images.shape[:2]
             images_flat = images.view(-1, *images.shape[2:])
-        else:  # single frame batch
+        else:
             batch_size = images.shape[0]
             num_frames = 1
             images_flat = images
 
-        # ── frozen CLIP features ─────────────────────────────────────────────
-        raw_feats = self.extract_frame_features(images_flat)          # (B*T, D)
-        feats = torch.nn.functional.normalize(raw_feats, dim=-1)      # L2-normalise
-        feats = feats.view(batch_size, num_frames, -1)                 # (B, T, D)
+        # Extract features
+        frame_features = self.extract_frame_features(images_flat)
+        frame_features = frame_features.view(batch_size, num_frames, -1)
 
-        # ── temporal signal: mean consecutive cosine similarity ──────────────
+        # Analyze temporal and spatial artifacts
         if num_frames > 1:
-            cos_sim = (feats[:, :-1, :] * feats[:, 1:, :]).sum(-1)    # (B, T-1)
-            temporal_sim = cos_sim.mean(-1)                            # (B,)
-            # Per-frame fake proxy: deviation of each sim from boundary
-            # (low similarity = higher per-frame anomaly)
-            per_frame_sim = torch.cat([
-                cos_sim[:, :1],   # pad first frame
-                cos_sim
-            ], dim=1)  # (B, T)
+            temporal_features = self.temporal_analyzer(frame_features)
         else:
-            temporal_sim = torch.ones(batch_size, device=images.device)
-            per_frame_sim = torch.ones(batch_size, 1, device=images.device)
+            temporal_features = frame_features.squeeze(1)
 
-        # ── spatial signal: per-frame distance from sequence mean ────────────
-        seq_mean = feats.mean(dim=1, keepdim=True)                     # (B, 1, D)
-        spatial_dist = torch.norm(feats - seq_mean, dim=-1).mean(-1)   # (B,)
-        # Normalise spatial_dist to [0, 1] via tanh
-        spatial_anomaly = torch.tanh(spatial_dist * 2.0)
+        spatial_features = self.spatial_analyzer(frame_features)
 
-        # ── fuse: low temporal consistency + high spatial anomaly → fake ─────
-        # Invert temporal_sim so that high sim = low fake score
-        temporal_fake = 1.0 - temporal_sim          # (B,)  ∈ [0, 1] approx
-        combined = 0.7 * temporal_fake + 0.3 * spatial_anomaly
+        # Fuse features
+        combined = torch.cat([temporal_features, spatial_features], dim=-1)
+        fused = self.fusion(combined)
 
-        # Sigmoid centred at 0.5 * (1 - boundary) to calibrate
-        fake_scores = torch.sigmoid(self._SIG_K * (combined - (1.0 - self._TEMPORAL_BOUNDARY)))
+        # Classification
+        logits = self.classifier(fused)
 
-        # Per-frame fake probability (sigmoid of per-frame sim deviation)
-        per_frame_fake = torch.sigmoid(
-            self._SIG_K * ((1.0 - per_frame_sim) - (1.0 - self._TEMPORAL_BOUNDARY))
-        )  # (B, T)
-
-        return {
-            "fake_scores": fake_scores,
-            "temporal_sim": temporal_sim,
-            "spatial_anomaly": spatial_anomaly,
-            "per_frame_fake_probs": per_frame_fake,
+        output: Dict[str, torch.Tensor] = {
+            "logits": logits,
+            "temporal_features": temporal_features,
+            "spatial_features": spatial_features,
         }
 
+        if return_explanations:
+            output["explanation_features"] = self.explanation_head(fused)
+
+        return output
+
     def predict(self, images: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return (predictions [B], fake_probs [B]) compatible with old callers."""
+        """Return (predictions [B], probabilities [B, 2])."""
         self.eval()
         with torch.no_grad():
             output = self.forward(images)
-            fake_p = output["fake_scores"]           # P(fake) in [0,1]
-            probs = torch.stack([1 - fake_p, fake_p], dim=-1)  # [B, 2]
-            preds = (fake_p > 0.5).long()
+            logits = output["logits"]
+            probs = torch.softmax(logits, dim=-1)
+            preds = torch.argmax(probs, dim=-1)
         return preds, probs
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Lightweight model (SimplifiedIvyDetector)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class SimplifiedIvyDetector(nn.Module):
+    """
+    Lightweight version: frozen CLIP vision encoder + simple MLP classifier.
+    Suitable for deployment and real-time applications.
+    """
+
+    def __init__(
+        self,
+        backbone: str = "openai/clip-vit-base-patch32",
+        num_classes: int = 2,
+        dropout: float = 0.3,
+    ):
+        super().__init__()
+
+        clip_model = CLIPModel.from_pretrained(backbone)
+        self.vision_encoder = clip_model.vision_model
+
+        for param in self.vision_encoder.parameters():
+            param.requires_grad = False
+
+        embed_dim = self.vision_encoder.config.hidden_size
+        self.classifier = nn.Sequential(
+            nn.Linear(embed_dim, 512),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(256, num_classes),
+        )
+
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            images: (batch, C, H, W)
+        Returns:
+            logits: (batch, num_classes)
+        """
+        vision_outputs = self.vision_encoder(pixel_values=images)
+        features = vision_outputs.pooler_output
+        return self.classifier(features)
+
+    def predict(self, images: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        self.eval()
+        with torch.no_grad():
+            logits = self.forward(images)
+            probs = torch.softmax(logits, dim=-1)
+            preds = torch.argmax(probs, dim=-1)
+        return preds, probs
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Utility: weight loading
+# ──────────────────────────────────────────────────────────────────────────────
+
+def load_pretrained_ivydetector(
+    weights_path: Optional[str] = None,
+    device: str = "cpu",
+) -> IvyXDetector:
+    """Load pretrained IvyXDetector model."""
+    model = IvyXDetector()
+    if weights_path:
+        state_dict = torch.load(weights_path, map_location=device)
+        model.load_state_dict(state_dict)
+        print(f"Loaded IvyFake weights from {weights_path}")
+    model.to(device)
+    model.eval()
+    return model
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# High-level wrapper for DeepfakeGuard integration
+# ──────────────────────────────────────────────────────────────────────────────
+
+# CLIP normalisation constants
+_CLIP_MEAN = [0.48145466, 0.4578275, 0.40821073]
+_CLIP_STD = [0.26862954, 0.26130258, 0.27577711]
 
 
 class IvyFakeDetector:
     """
     IvyFake-based video detector for DeepfakeGuard.
-    
-    Features:
-    - CLIP-based vision encoder
-    - Temporal artifact analysis for videos
-    - Spatial artifact analysis for frames
-    - Explainable outputs
+
+    Operation modes:
+      • **Trained** (weights_path provided): the full IvyXDetector architecture
+        runs through temporal + spatial analyzers → fusion → classifier →
+        softmax.  This is the proper IvyFake pipeline.
+      • **Zero-shot** (no weights): uses CLIP text-image zero-shot
+        classification with prompts for "real" vs "AI-generated" content.
+        This is how CLIP is designed for zero-shot tasks.
     """
-    
+
+    # Text prompts for zero-shot CLIP classification (class 0 = real, class 1 = fake)
+    _ZS_REAL_PROMPTS: List[str] = [
+        "a real photograph",
+        "an authentic unedited photo",
+        "a genuine camera photograph of a real scene",
+        "a natural unmanipulated photograph",
+    ]
+    _ZS_FAKE_PROMPTS: List[str] = [
+        "an AI generated image",
+        "a deepfake manipulated photo",
+        "a synthetic computer generated image",
+        "an artificially created fake image",
+    ]
+
     def __init__(
         self,
         device: str = "cpu",
         num_frames: int = 16,
         threshold: float = 0.5,
-        model_name: str = "openai/clip-vit-base-patch32"
+        model_name: str = "openai/clip-vit-base-patch32",
+        weights_path: Optional[str] = None,
     ):
         self.device = device
         self.num_frames = num_frames
         self.threshold = threshold
-        
-        # Initialize IvyX model
+        self.weights_loaded = False
+
+        # Build model — freeze backbone when no weights (zero-shot mode)
         self.model = IvyXDetector(
             model_name=model_name,
-            device=device
+            freeze_backbone=(weights_path is None),
         )
-        
-        print(f"Loaded IvyFake detector on {device}")
-    
-    def extract_frames(self, video_path: str) -> list:
+
+        if weights_path:
+            state_dict = torch.load(weights_path, map_location=device)
+            self.model.load_state_dict(state_dict)
+            self.weights_loaded = True
+            print(f"IvyFake: loaded trained weights from {weights_path}")
+        else:
+            print("IvyFake: no weights — using CLIP zero-shot text-image mode")
+
+        self.model.to(device)
+        self.model.eval()
+
+        # Pre-compute text embeddings for zero-shot (only needed without weights)
+        if not self.weights_loaded:
+            self._precompute_text_embeddings()
+
+    # ── Frame extraction ─────────────────────────────────────────────────
+
+    def extract_frames(self, video_path: str) -> List[np.ndarray]:
         """Uniformly sample frames from video."""
         cap = cv2.VideoCapture(video_path)
-        frames = []
-        
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         if total == 0:
             cap.release()
             return []
-            
-        step = max(total // self.num_frames, 1)
-        
-        idx = 0
-        while cap.isOpened() and len(frames) < self.num_frames:
+
+        indices = np.linspace(0, total - 1, self.num_frames, dtype=int)
+        frames: List[np.ndarray] = []
+        for idx in indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
             ret, frame = cap.read()
-            if not ret:
-                break
-            if idx % step == 0:
-                # Convert BGR to RGB
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frames.append(frame)
-            idx += 1
-        
+            if ret:
+                frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         cap.release()
         return frames
-    
-    def preprocess_frame(self, frame: np.ndarray) -> torch.Tensor:
-        """Preprocess frame for CLIP input."""
-        # Resize to 224x224 (CLIP's expected input)
+
+    @staticmethod
+    def preprocess_frame(frame: np.ndarray) -> torch.Tensor:
+        """Preprocess a single RGB frame for CLIP input."""
         frame_resized = cv2.resize(frame, (224, 224))
-        
-        # Convert to tensor and normalize (CLIP normalization)
-        frame_tensor = torch.from_numpy(frame_resized).float() / 255.0
-        frame_tensor = frame_tensor.permute(2, 0, 1)  # HWC to CHW
-        
-        # CLIP normalization
-        mean = torch.tensor([0.48145466, 0.4578275, 0.40821073]).view(3, 1, 1)
-        std = torch.tensor([0.26862954, 0.26130258, 0.27577711]).view(3, 1, 1)
-        frame_tensor = (frame_tensor - mean) / std
-        
-        return frame_tensor
-    
+        t = torch.from_numpy(frame_resized).float() / 255.0
+        t = t.permute(2, 0, 1)  # HWC → CHW
+        mean = torch.tensor(_CLIP_MEAN).view(3, 1, 1)
+        std = torch.tensor(_CLIP_STD).view(3, 1, 1)
+        return (t - mean) / std
+
+    # ── Trained-model inference ──────────────────────────────────────────
+
+    def _predict_trained(self, video_tensor: torch.Tensor) -> Dict[str, Any]:
+        """Full model: temporal + spatial → fusion → classifier → softmax."""
+        preds, probs = self.model.predict(video_tensor)
+        fake_prob = float(probs[0, 1].item())
+
+        # Also compute per-frame scores by running frame-by-frame
+        num_frames = video_tensor.shape[1] if video_tensor.dim() == 5 else 1
+        per_frame_probs: List[float] = []
+        if video_tensor.dim() == 5 and num_frames > 1:
+            for i in range(num_frames):
+                frame_input = video_tensor[:, i:i + 1, :, :, :]
+                _, fp = self.model.predict(frame_input)
+                per_frame_probs.append(float(fp[0, 1].item()))
+
+        return {
+            "score": fake_prob,
+            "label": "FAKE" if fake_prob > self.threshold else "REAL",
+            "details": {
+                "per_frame_fake_probs": per_frame_probs if per_frame_probs else [fake_prob],
+                "frame_count": num_frames,
+                "detector_type": "ivyfake",
+                "mode": "trained",
+                "backbone": "CLIP-ViT-B/32",
+                "features": ["temporal_analyzer", "spatial_analyzer", "fusion", "classifier"],
+            },
+        }
+
+    # ── Zero-shot text-image classification ────────────────────────────
+
+    def _precompute_text_embeddings(self) -> None:
+        """Pre-compute and cache CLIP text embeddings for real/fake prompts."""
+        tokenizer = self.model.processor.tokenizer
+        clip = self.model.clip_model
+
+        def _encode_prompts(prompts: List[str]) -> torch.Tensor:
+            tokens = tokenizer(prompts, padding=True, return_tensors="pt").to(self.device)
+            text_out = clip.text_model(
+                input_ids=tokens["input_ids"],
+                attention_mask=tokens.get("attention_mask"),
+            )
+            # pooler_output → text_projection → normalize
+            pooled = text_out.pooler_output                      # (N, hidden)
+            if hasattr(clip, "text_projection") and clip.text_projection is not None:
+                pooled = clip.text_projection(pooled)            # (N, embed)
+            return F.normalize(pooled, dim=-1)
+
+        with torch.no_grad():
+            real_embeds = _encode_prompts(self._ZS_REAL_PROMPTS)
+            self._real_text_embed = F.normalize(real_embeds.mean(dim=0, keepdim=True), dim=-1)
+
+            fake_embeds = _encode_prompts(self._ZS_FAKE_PROMPTS)
+            self._fake_text_embed = F.normalize(fake_embeds.mean(dim=0, keepdim=True), dim=-1)
+
+        # Stack: (2, embed_dim) — row 0 = real, row 1 = fake
+        self._text_embeds = torch.cat(
+            [self._real_text_embed, self._fake_text_embed], dim=0
+        )
+
+    def _predict_zeroshot(self, video_tensor: torch.Tensor) -> Dict[str, Any]:
+        """
+        Zero-shot CLIP text-image classification.
+
+        Compares each frame's CLIP vision embedding against text prompts
+        for "real photograph" vs "AI-generated deepfake", then averages
+        across frames.  This is how CLIP zero-shot classification works
+        and matches the spirit of the IvyFake CLIP-based approach.
+        """
+        if video_tensor.dim() == 5:
+            batch_size, num_frames = video_tensor.shape[:2]
+            images_flat = video_tensor.view(-1, *video_tensor.shape[2:])
+        else:
+            batch_size = video_tensor.shape[0]
+            num_frames = 1
+            images_flat = video_tensor
+
+        # Get CLIP vision embeddings for all frames
+        raw_feats = self.model.extract_frame_features(images_flat)
+        feats = F.normalize(raw_feats, dim=-1)  # (N, embed_dim)
+
+        # Cosine similarity against text embeddings (N, 2)
+        # Column 0 = similarity to "real", column 1 = similarity to "fake"
+        logit_scale = self.model.clip_model.logit_scale.exp()
+        sim = logit_scale * (feats @ self._text_embeds.T)  # (N, 2)
+        probs = torch.softmax(sim, dim=-1)  # (N, 2)
+
+        per_frame_fake_probs = probs[:, 1].tolist()  # P(fake) per frame
+
+        # Average across all frames
+        mean_probs = probs.view(batch_size, num_frames, 2).mean(dim=1)  # (B, 2)
+        fake_prob = float(mean_probs[0, 1].item())
+
+        # Debug logging
+        real_sim_avg = float(sim[:, 0].mean().item())
+        fake_sim_avg = float(sim[:, 1].mean().item())
+        print(f"IvyFake ZS: real_sim={real_sim_avg:.3f}  fake_sim={fake_sim_avg:.3f}  "
+              f"P(fake)={fake_prob:.4f}  frames={num_frames}")
+
+        return {
+            "score": fake_prob,
+            "label": "FAKE" if fake_prob > self.threshold else "REAL",
+            "details": {
+                "per_frame_fake_probs": per_frame_fake_probs,
+                "frame_count": num_frames,
+                "detector_type": "ivyfake",
+                "mode": "zero-shot (CLIP text-image)",
+                "backbone": "CLIP-ViT-B/32 (frozen)",
+                "features": ["clip_text_image_similarity"],
+                "real_similarity": round(real_sim_avg, 4),
+                "fake_similarity": round(fake_sim_avg, 4),
+                "note": "CLIP zero-shot text-image classification — load trained weights for full IvyFake accuracy",
+            },
+        }
+
+    # ── Public API ───────────────────────────────────────────────────────
+
     @torch.no_grad()
     def predict_video(self, video_path: str) -> Dict[str, Any]:
         """
         Detect AI-generated content in video.
-        
+
         Returns:
-            dict with:
-                - score: P(fake) 0-1
-                - label: "FAKE" or "REAL"
-                - details: per-frame info and explanations
+            dict with score, label, and details.
         """
-        # Extract frames
         frames = self.extract_frames(video_path)
         if not frames:
             return {
                 "score": 0.0,
                 "label": "UNKNOWN",
-                "details": {"error": "Could not extract frames"}
+                "details": {"error": "Could not extract frames"},
             }
-        
-        # Preprocess frames → (1, T, 3, H, W) so forward treats as one video
+
         inputs = torch.stack([self.preprocess_frame(f) for f in frames]).to(self.device)
-        inputs = inputs.unsqueeze(0)   # (T,3,H,W) → (1,T,3,H,W)
-        
-        # Inference — uses frozen CLIP features; untrained heads are bypassed
-        self.model.eval()
-        with torch.no_grad():
-            output = self.model.forward(inputs)
+        inputs = inputs.unsqueeze(0)  # (T,3,H,W) → (1,T,3,H,W)
 
-        mean_score = float(output["fake_scores"].mean().item())
-        per_frame_t = output["per_frame_fake_probs"][0]   # (T,) for first (only) batch
-        per_frame = [float(p) for p in per_frame_t.cpu().tolist()]
-        temporal_sim = float(output["temporal_sim"].mean().item())
-        spatial_anomaly = float(output["spatial_anomaly"].mean().item())
+        if self.weights_loaded:
+            return self._predict_trained(inputs)
+        else:
+            return self._predict_zeroshot(inputs)
 
-        return {
-            "score": mean_score,
-            "label": "FAKE" if mean_score > self.threshold else "REAL",
-            "details": {
-                "per_frame_fake_probs": per_frame,
-                "frame_count": len(frames),
-                "detector_type": "ivyfake",
-                "backbone": "CLIP-ViT-B/32 (frozen)",
-                "features": ["temporal_consistency", "spatial_anomaly"],
-                "temporal_sim": round(temporal_sim, 4),
-                "spatial_anomaly": round(spatial_anomaly, 4),
-                "note": "Principled CLIP-based detector: frame-to-frame cosine similarity + embedding variance"
-            }
-        }
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Factory / standalone helpers
+# ──────────────────────────────────────────────────────────────────────────────
 
 def create_ivyfake_detector(
     device: str = "cpu",
-    **kwargs
+    weights_path: Optional[str] = None,
+    **kwargs,
 ) -> IvyFakeDetector:
     """Factory function for IvyFake detector."""
-    return IvyFakeDetector(device=device, **kwargs)
+    return IvyFakeDetector(device=device, weights_path=weights_path, **kwargs)
 
 
-# Detection function for DeepfakeGuard integration
-def detect_video_ivyfake(video_path: str, device: str = "cpu") -> Dict[str, Any]:
+def detect_video_ivyfake(
+    video_path: str,
+    device: str = "cpu",
+    weights_path: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Standalone detection function for DeepfakeGuard modality registration.
-    
+
     Args:
         video_path: Path to video file
         device: "cpu" or "cuda"
-        
+        weights_path: Optional path to trained IvyFake weights
+
     Returns:
         dict compatible with DeepfakeGuard format
     """
-    detector = IvyFakeDetector(device=device)
+    detector = IvyFakeDetector(device=device, weights_path=weights_path)
     result = detector.predict_video(video_path)
-    
-    # Convert to ModalityResult format
     return ModalityResult(
         score=result["score"],
         label=result["label"],
-        details=result["details"]
+        details=result["details"],
     ).__dict__

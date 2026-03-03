@@ -109,7 +109,7 @@ detector_type = st.sidebar.selectbox(
         "d3":       "📊 D3 (Training-Free - Temporal)",
         "all":      "🔀 All Detectors (Ensemble)"
     }[x],
-    help="Switch between different detection backends, or run all 4 for an ensemble comparison"
+    help="Switch between different detection backends, or run all for an ensemble comparison"
 )
 
 detector_info = {

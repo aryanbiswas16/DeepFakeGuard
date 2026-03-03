@@ -145,8 +145,10 @@ class D3Detector:
     Compatible with the DeepfakeGuard pipeline.
     """
 
-    # Default threshold from the reference Streamlit app (app.py)
-    DEFAULT_THRESHOLD = 2.5
+    # Default threshold — calibrated for xCLIP-16 / L2 with 32 sampled frames.
+    # The reference D3 demo used 2.5 but with longer clips; 1.8 is more stable
+    # for typical conference-demo videos (5-30 s, 24-30 fps).
+    DEFAULT_THRESHOLD = 1.8
 
     def __init__(
         self,
@@ -202,7 +204,7 @@ class D3Detector:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-    def predict_video(self, video_path: str, sample_frames: int = 16) -> Dict[str, Any]:
+    def predict_video(self, video_path: str, sample_frames: int = 32) -> Dict[str, Any]:
         frames = self._extract_frames(video_path, sample_frames)
         if len(frames) < 3:
             return {
@@ -214,8 +216,11 @@ class D3Detector:
         tensors = torch.stack([self._preprocess_frame(f) for f in frames])  # (T,3,224,224)
         batch = tensors.unsqueeze(0).to(self.device)  # (1,T,3,224,224)
 
-        _, _, volatility_tensor = self.model(batch)
+        _, dis_2nd_avg_tensor, volatility_tensor = self.model(batch)
         volatility = float(volatility_tensor.item())
+        dis_2nd_avg = float(dis_2nd_avg_tensor.item())
+        print(f"D3 debug: volatility={volatility:.4f}  dis_2nd_avg={dis_2nd_avg:.4f}  "
+              f"threshold={self.threshold}  frames={len(frames)}")
 
         # Higher volatility -> real; lower -> AI-generated.
         # Score is a sigmoid centred at the threshold so it:
