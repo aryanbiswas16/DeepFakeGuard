@@ -20,6 +20,7 @@ Optional:     ffmpeg on PATH (for audio extraction from video)
 
 from __future__ import annotations
 
+import gc
 import os
 import subprocess
 import tempfile
@@ -215,17 +216,21 @@ def build_composite_images(
     composites : list[np.ndarray]
         Each element is an (H, W, 3) uint8 composite image.
     """
-    frames, fps, total_count = extract_frames(video_path)
+    # --- Get basic video info and sample start indices ---
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise IOError(f"Cannot open video: {video_path}")
+    total_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
 
-    if len(frames) < window_len + 1:
+    if total_count < window_len + 1:
         warnings.warn(
-            f"Video too short ({len(frames)} frames). "
+            f"Video too short ({total_count} frames). "
             f"Need at least {window_len + 1}."
         )
         return []
 
-    # --- Sample starting indices (evenly spaced) ---
-    max_start = len(frames) - window_len
+    max_start = total_count - window_len
     if n_extract >= max_start:
         start_indices = list(range(max_start))
     else:
@@ -233,17 +238,7 @@ def build_composite_images(
             0, max_start - 1, n_extract, endpoint=True, dtype=int,
         ).tolist()
 
-    # --- Resize frames to FRAME_SIZE × FRAME_SIZE ---
-    # Convert BGR→RGB to match original preprocess.py which uses
-    # cv2.cvtColor(frame, COLOR_BGR2RGBA)[:,:,:3] → RGB
-    resized_frames = [
-        cv2.resize(
-            cv2.cvtColor(f, cv2.COLOR_BGR2RGB), (frame_size, frame_size)
-        )
-        for f in frames
-    ]
-
-    # --- Extract audio & generate mel-spectrogram ---
+    # --- Extract audio & generate mel-spectrogram once up front ---
     mel_img: Optional[np.ndarray] = None
     with tempfile.TemporaryDirectory() as tmp_dir:
         wav_path = os.path.join(tmp_dir, "audio.wav")
@@ -253,41 +248,60 @@ def build_composite_images(
     composites: List[np.ndarray] = []
 
     for start in start_indices:
-        group_frames = resized_frames[start: start + window_len]
+        # --- Seek to start and read only window_len frames ---
+        cap = cv2.VideoCapture(video_path)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+        group_frames: List[np.ndarray] = []
+        for _ in range(window_len):
+            ret, frame = cap.read()
+            if not ret:
+                break
+            # Convert BGR→RGB and resize immediately; discard raw frame
+            group_frames.append(
+                cv2.resize(
+                    cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+                    (frame_size, frame_size),
+                )
+            )
+            del frame
+        cap.release()
+
         if len(group_frames) < window_len:
+            del group_frames
             continue
 
         # Concatenate frames horizontally: (500, 2500, 3)
         frame_row = np.concatenate(group_frames, axis=1)[:, :, :3]
+        del group_frames
 
         # Build mel-spectrogram slice for this time window
         if mel_img is not None:
-            mapping = mel_img.shape[1] / len(frames)
+            mapping = mel_img.shape[1] / max(total_count, 1)
             begin = int(np.round(start * mapping))
             end = int(np.round((start + window_len) * mapping))
             if end <= begin:
                 end = begin + 1
-            sub_mel = mel_img[:, begin:end, :3]
+            sub_mel = mel_img[:, begin:end, :3].copy()
             sub_mel = cv2.resize(
                 sub_mel, (frame_size * window_len, frame_size),
             )
         else:
-            # Fallback: grey placeholder
             sub_mel = np.full(
                 (frame_size, frame_size * window_len, 3), 128, dtype=np.uint8,
             )
 
         # Stack vertically: mel on top, frames below → (1000, 2500, 3)
-        # Both mel (from matplotlib) and frames are now RGB — matching
-        # the original preprocess.py which saves RGB PNGs via plt.imsave.
         composite_rgb = np.concatenate([sub_mel, frame_row], axis=0)
+        del sub_mel, frame_row
 
-        # Simulate cv2.imread read-back: the original training pipeline
-        # saves composites as RGB PNGs then reads them with cv2.imread
-        # which returns BGR.  The model was trained on BGR data.
+        # Simulate cv2.imread read-back: model was trained on BGR data
         composite_bgr = cv2.cvtColor(composite_rgb, cv2.COLOR_RGB2BGR)
+        del composite_rgb
+
         composites.append(composite_bgr)
 
+    del mel_img
+    gc.collect()
     return composites
 
 
@@ -398,12 +412,18 @@ def preprocess_video(
         for s in range(3):
             for f in range(window_len):
                 crops_batched[s][f].append(crops[s][f])
+        del comp  # free composite array immediately after conversion
+
+    del composites
+    gc.collect()
 
     # Stack into batch tensors
     full_imgs = torch.stack(full_imgs_list, dim=0)  # (N, 3, 1120, 1120)
+    del full_imgs_list
     crops_tensors: List[List[torch.Tensor]] = [
         [torch.stack(crops_batched[s][f], dim=0) for f in range(window_len)]
         for s in range(3)
     ]
+    del crops_batched
 
     return full_imgs, crops_tensors

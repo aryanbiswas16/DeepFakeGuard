@@ -25,6 +25,7 @@ interchangeably with DINOv3, ResNet18, IvyFake, and D3 detectors.
 
 from __future__ import annotations
 
+import gc
 import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -197,7 +198,14 @@ class LipFDDetector:
             probs = torch.sigmoid(pred_logits).flatten().cpu().tolist()
             all_scores.extend(probs)
 
-        # --- Aggregate scores ---
+            # Free GPU tensors immediately after each mini-batch
+            del batch_imgs, batch_crops, features, pred_logits
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        # Free preprocessing tensors before aggregation
+        del full_imgs, crops
+        gc.collect()
         if not all_scores:
             return self._error_result("No valid predictions produced.")
 
