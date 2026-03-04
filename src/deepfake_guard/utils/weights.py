@@ -1,6 +1,122 @@
 import os
+import sys
 import warnings
+from pathlib import Path
+from typing import Optional, Callable
+
 import torch
+
+# ── LipFD weight auto-download constants ─────────────────────────────────────
+# Update this URL after uploading lipfd_ckpt.pth to a GitHub Release.
+# Expected format: direct-download URL (GitHub Release asset, Google Drive, etc.)
+LIPFD_WEIGHTS_URL = (
+    "https://github.com/aryanbiswas16/DeepFakeGuard/releases/download/"
+    "v0.4.0-weights/lipfd_ckpt.pth"
+)
+
+# Default path (inside the installed package, next to dinov3_best_v3.pth)
+LIPFD_DEFAULT_PATH = Path(__file__).parent.parent / "weights" / "lipfd_ckpt.pth"
+
+
+def download_lipfd_weights(
+    dest: Optional[str | Path] = None,
+    url: Optional[str] = None,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+) -> Path:
+    """Download the LipFD checkpoint to *dest* if it doesn't already exist.
+
+    Parameters
+    ----------
+    dest : Path, optional
+        Where to save the file.  Defaults to ``src/deepfake_guard/weights/lipfd_ckpt.pth``.
+    url : str, optional
+        Override download URL (defaults to ``LIPFD_WEIGHTS_URL``).
+    progress_callback : callable, optional
+        ``callback(bytes_downloaded, total_bytes)`` called during download.
+
+    Returns
+    -------
+    Path
+        Absolute path to the (existing or freshly-downloaded) weights file.
+
+    Raises
+    ------
+    RuntimeError
+        If the download fails.
+    """
+    dest = Path(dest or LIPFD_DEFAULT_PATH)
+    url = url or LIPFD_WEIGHTS_URL
+
+    if dest.exists():
+        return dest
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(".pth.part")
+
+    print(f"Downloading LipFD weights (~1.7 GB) to {dest} ...")
+    print(f"  URL: {url}")
+
+    try:
+        import urllib.request
+
+        req = urllib.request.Request(url, headers={"User-Agent": "DeepFakeGuard/0.4"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            total = int(resp.headers.get("Content-Length", 0))
+            downloaded = 0
+            chunk_size = 1 << 20  # 1 MB
+
+            with open(tmp, "wb") as f:
+                while True:
+                    chunk = resp.read(chunk_size)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if progress_callback:
+                        progress_callback(downloaded, total)
+                    elif total:
+                        pct = downloaded * 100 // total
+                        mb_done = downloaded / (1 << 20)
+                        mb_total = total / (1 << 20)
+                        sys.stdout.write(
+                            f"\r  [{pct:3d}%] {mb_done:.0f} / {mb_total:.0f} MB"
+                        )
+                        sys.stdout.flush()
+
+        print()  # newline after progress
+        tmp.rename(dest)
+        print(f"  ✓ Saved to {dest}")
+        return dest
+
+    except Exception as exc:
+        if tmp.exists():
+            tmp.unlink()
+        raise RuntimeError(
+            f"Failed to download LipFD weights from {url}: {exc}\n"
+            f"You can download manually and place the file at:\n  {dest}"
+        ) from exc
+
+
+def resolve_lipfd_weights(weights_path: Optional[str] = None) -> Optional[str]:
+    """Resolve the LipFD weights path: explicit → default → auto-download.
+
+    Returns the path string if weights are available, or None if download fails.
+    """
+    # 1. Explicit path provided and exists
+    if weights_path and os.path.exists(weights_path):
+        return weights_path
+
+    # 2. Default location already has the file
+    if LIPFD_DEFAULT_PATH.exists():
+        return str(LIPFD_DEFAULT_PATH)
+
+    # 3. Auto-download
+    try:
+        path = download_lipfd_weights()
+        return str(path)
+    except RuntimeError as e:
+        warnings.warn(str(e))
+        return None
 
 
 def load_weights(target, path):

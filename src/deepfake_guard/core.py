@@ -101,15 +101,21 @@ class DeepfakeGuard:
     def _init_lipfd(self, weights_path: Optional[str] = None) -> None:
         """Initialize LipFD detector (audio-visual lip-sync deepfake detection, NeurIPS 2024).
 
-        Requires pretrained weights (~1.68 GB). Download from:
-          https://github.com/AaronComo/LipFD
+        Weights are resolved automatically:
+          1. Explicit ``weights_path`` argument (if provided and exists)
+          2. Bundled weights at ``src/deepfake_guard/weights/lipfd_ckpt.pth``
+          3. Auto-download from GitHub Releases (~1.68 GB, first run only)
         """
-        if weights_path and not os.path.exists(weights_path):
+        from .utils.weights import resolve_lipfd_weights
+        resolved = resolve_lipfd_weights(weights_path)
+        if resolved is None:
             import warnings
-            warnings.warn(f"LipFD weights not found at '{weights_path}' — running without weights (accuracy will be poor).")
-            weights_path = None
-        self.lipfd_detector = LipFDDetector(weights_path=weights_path, device=self.device)
-        self.visual_weights_loaded = weights_path is not None
+            warnings.warn(
+                "LipFD weights not available — running without weights "
+                "(accuracy will be poor). See README for download instructions."
+            )
+        self.lipfd_detector = LipFDDetector(weights_path=resolved, device=self.device)
+        self.visual_weights_loaded = resolved is not None
 
     def set_detector(
         self,

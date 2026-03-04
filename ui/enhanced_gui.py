@@ -219,12 +219,11 @@ def _load_single_detector(det_type: str, d3_enc: str = "xclip-16", lipfd_wts: st
     try:
         weights = None
         if det_type == "lipfd":
-            # Priority: user input → auto-detect default location
-            if lipfd_wts and Path(lipfd_wts).exists():
-                weights = lipfd_wts
-            else:
-                candidate = Path(__file__).resolve().parents[1] / "src" / "deepfake_guard" / "weights" / "lipfd_ckpt.pth"
-                weights = str(candidate) if candidate.exists() else None
+            from deepfake_guard.utils.weights import resolve_lipfd_weights
+            # Priority: user input → default location → auto-download
+            weights = resolve_lipfd_weights(
+                lipfd_wts if lipfd_wts else None
+            )
         guard = DeepfakeGuard(detector_type=det_type, weights_path=weights)
         if det_type == "d3" and d3_enc:
             guard._init_d3(encoder=d3_enc)
