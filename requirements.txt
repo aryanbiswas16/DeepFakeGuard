@@ -15,12 +15,5 @@ packaging
 # CLIP (required by LipFD detector)
 # pip install git+https://github.com/openai/CLIP.git
 
-# UI dependencies
-streamlit>=1.25.0
-requests>=2.31.0
-plotly>=5.15.0
-
-# API dependencies
-fastapi>=0.100.0
-uvicorn>=0.23.0
-python-multipart>=0.0.6
+# Optional demo extras (recommended via pyproject):
+# pip install -e ".[ui]"

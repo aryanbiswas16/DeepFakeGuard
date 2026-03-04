@@ -1,6 +1,6 @@
 """
 Enhanced Deepfake Guard GUI with detector toggle
-Supports DINOv3, ResNet18, IvyFake, D3, and LipFD detectors
+Supports DINOv3, D3, and LipFD detectors
 """
 
 import streamlit as st
@@ -101,11 +101,9 @@ st.sidebar.header("⚙️ Detector Settings")
 
 detector_type = st.sidebar.selectbox(
     "Select Detector",
-    options=["dinov3", "resnet18", "ivyfake", "d3", "lipfd", "all"],
+    options=["dinov3", "d3", "lipfd", "all"],
     format_func=lambda x: {
         "dinov3":   "🧠 DINOv3 (ViT-B/16 - 0.88 AUROC)",
-        "resnet18": "🎯 ResNet18 (CNN - Pretrained)",
-        "ivyfake":  "🌿 IvyFake (CLIP - Explainable)",
         "d3":       "📊 D3 (Training-Free - Temporal)",
         "lipfd":    "🎤 LipFD (Audio-Visual - NeurIPS 2024)",
         "all":      "🔀 All Detectors (Ensemble)"
@@ -120,28 +118,6 @@ detector_info = {
         "features": ["Face cropping (MTCNN)", "768-dim embeddings", "LayerNorm tuning", "0.88+ AUROC"],
         "pros": "Higher accuracy, trained on deepfakes",
         "cons": "Requires face detection, slower",
-        "requires_weights": False
-    },
-    "resnet18": {
-        "name": "ResNet18 CNN",
-        "description": "Full-frame detection with ResNet18",
-        "features": ["Full frame analysis", "No face cropping", "Lightweight", "Pretrained on ImageNet"],
-        "pros": "Faster, no face dependency",
-        "cons": "Lower accuracy (not fine-tuned)",
-        "requires_weights": False
-    },
-    "ivyfake": {
-        "name": "IvyFake CLIP Detector",
-        "description": "CLIP-based explainable AIGC detection",
-        "features": [
-            "CLIP ViT-B/32 backbone",
-            "Temporal artifact analysis",
-            "Spatial artifact analysis",
-            "Explainable outputs",
-            "No face cropping required"
-        ],
-        "pros": "Explainable, artifact detection, pretrained",
-        "cons": "First run downloads CLIP model",
         "requires_weights": False
     },
     "d3": {
@@ -177,8 +153,8 @@ detector_info = {
 # Show detector info
 if detector_type == "all":
     st.sidebar.markdown("**🔀 Ensemble Mode**")
-    st.sidebar.markdown("_Runs all 5 detectors and compares their verdicts._")
-    st.sidebar.markdown("- DINOv3 · ResNet18 · IvyFake · D3 · LipFD")
+    st.sidebar.markdown("_Runs all 3 detectors and compares their verdicts._")
+    st.sidebar.markdown("- DINOv3 · D3 · LipFD")
     st.sidebar.markdown("✅ **Pros:** Cross-model agreement, richer analysis")
     st.sidebar.markdown("⚠️ **Cons:** Slower — loads all models")
 else:
@@ -190,6 +166,19 @@ else:
         st.sidebar.markdown(f"- {feat}")
     st.sidebar.markdown(f"✅ **Pros:** {info['pros']}")
     st.sidebar.markdown(f"⚠️ **Cons:** {info['cons']}")
+
+# LipFD options
+if detector_type in ("lipfd", "all"):
+    st.sidebar.divider()
+    lipfd_weights_input = st.sidebar.text_input(
+        "LipFD Weights Path (optional)",
+        value="",
+        placeholder="src/deepfake_guard/weights/lipfd_ckpt.pth",
+        help="Leave blank to auto-detect src/deepfake_guard/weights/lipfd_ckpt.pth, or enter a custom path."
+    )
+    st.sidebar.caption("Download: github.com/AaronComo/LipFD")
+else:
+    lipfd_weights_input = ""
 
 # D3 options (shown for d3 or ensemble)
 if detector_type in ("d3", "all"):
@@ -221,18 +210,21 @@ else:
 
 # ── Detector loading (each type cached independently) ────────────────────────
 @st.cache_resource
-def _load_single_detector(det_type: str, d3_enc: str = "xclip-16"):
+def _load_single_detector(det_type: str, d3_enc: str = "xclip-16", lipfd_wts: str = ""):
     import sys
     src_path = Path(__file__).resolve().parents[1] / "src"
     if str(src_path) not in sys.path:
         sys.path.insert(0, str(src_path))
     from deepfake_guard import DeepfakeGuard
     try:
-        # LipFD needs weights path from well-known location
         weights = None
         if det_type == "lipfd":
-            candidate = Path(__file__).resolve().parents[1] / "weights" / "lipfd_ckpt.pth"
-            weights = str(candidate) if candidate.exists() else None
+            # Priority: user input → auto-detect default location
+            if lipfd_wts and Path(lipfd_wts).exists():
+                weights = lipfd_wts
+            else:
+                candidate = Path(__file__).resolve().parents[1] / "src" / "deepfake_guard" / "weights" / "lipfd_ckpt.pth"
+                weights = str(candidate) if candidate.exists() else None
         guard = DeepfakeGuard(detector_type=det_type, weights_path=weights)
         if det_type == "d3" and d3_enc:
             guard._init_d3(encoder=d3_enc)
@@ -241,11 +233,11 @@ def _load_single_detector(det_type: str, d3_enc: str = "xclip-16"):
         return None, str(e)
 
 
-def _load_all_detectors(d3_enc: str = "xclip-16"):
-    """Load all 5 detectors, each using the shared cache."""
+def _load_all_detectors(d3_enc: str = "xclip-16", lipfd_wts: str = ""):
+    """Load all 3 detectors, each using the shared cache."""
     guards, errors = {}, {}
-    for t in ["dinov3", "resnet18", "ivyfake", "d3", "lipfd"]:
-        g, e = _load_single_detector(t, d3_enc)
+    for t in ["dinov3", "d3", "lipfd"]:
+        g, e = _load_single_detector(t, d3_enc, lipfd_wts)
         if e:
             errors[t] = e
         else:
@@ -255,8 +247,8 @@ def _load_all_detectors(d3_enc: str = "xclip-16"):
 
 # Initialise / retrieve from cache
 if detector_type == "all":
-    with st.spinner("Loading all 5 detectors (results are cached after first run)..."):
-        guards, load_errors = _load_all_detectors(d3_encoder)
+    with st.spinner("Loading all 3 detectors (results are cached after first run)..."):
+        guards, load_errors = _load_all_detectors(d3_encoder, lipfd_weights_input)
     for det, err in load_errors.items():
         st.sidebar.warning(f"⚠️ {det.upper()} failed: {err}")
     if not guards:
@@ -266,7 +258,7 @@ if detector_type == "all":
     st.success(f"✅ Loaded: {loaded_names}")
 else:
     with st.spinner(f"Loading {detector_type.upper()} detector..."):
-        _guard, _error = _load_single_detector(detector_type, d3_encoder)
+        _guard, _error = _load_single_detector(detector_type, d3_encoder, lipfd_weights_input)
     if _error:
         st.error(f"Failed to load detector: {_error}")
         st.stop()
@@ -338,7 +330,7 @@ if uploaded_file is not None:
                         fake_votes = sum(1 for lbl in labels.values() if lbl == "FAKE")
 
                         # Weighted ensemble score matching core.py trust priors
-                        _TRUST = {"dinov3": 1.0, "lipfd": 0.85, "d3": 0.6, "ivyfake": 0.5, "resnet18": 0.2}
+                        _TRUST = {"dinov3": 1.0, "lipfd": 0.85, "d3": 0.6}
                         w_sum, w_total = 0.0, 0.0
                         for n, s in scores.items():
                             t = _TRUST.get(n, 0.5)
@@ -377,7 +369,7 @@ if uploaded_file is not None:
                                 if per_frame:
                                     render_frame_chart(per_frame, threshold, det_name.upper())
                                 else:
-                                    # D3 produces a volatility scalar, not per-frame probs
+                                    # D3: volatility scalar
                                     details = res.get("modality_results", {}).get("visual", {}).get("details", {})
                                     vol = details.get("volatility")
                                     if vol is not None:
@@ -389,6 +381,13 @@ if uploaded_file is not None:
                                             proxy = 0.0
                                         st.caption(f"Motion Volatility: {vol:.4f}  |  threshold: {thr:.2f}")
                                         st.progress(proxy, text=f"Fake-likelihood (sigmoid): {proxy:.1%}")
+                                    # LipFD: audio-visual sample stats
+                                    av = res.get("modality_results", {}).get("audio_visual", {}).get("details", {})
+                                    fake_ratio = av.get("fake_ratio")
+                                    if fake_ratio is not None:
+                                        n_samples = av.get("num_samples", "?")
+                                        st.caption(f"Lip-sync samples: {n_samples}  |  fake ratio: {fake_ratio:.1%}")
+                                        st.progress(scores[det_name], text=f"Mean P(fake): {scores[det_name]:.1%}")
 
                         all_errs = [e for r in all_results.values() for e in r.get("errors", [])]
                         if all_errs:
@@ -446,34 +445,58 @@ if uploaded_file is not None:
                                     details = res.get("details", {})
                                     det_type_str = details.get("detector_type", detector_type)
                                     st.caption(f"Detector: {det_type_str.upper()}")
-                                    frame_count = details.get("frame_count") or details.get("per_frame_fake_probs", [])
-                                    if isinstance(frame_count, list):
-                                        frame_count = len(frame_count)
-                                    st.caption(f"Frames analyzed: {frame_count}")
-                                    volatility = details.get("volatility")
-                                    if volatility is not None:
-                                        st.caption(f"Motion Volatility: {volatility:.4f}")
-                                    encoder = details.get("encoder")
-                                    if encoder:
-                                        st.caption(f"Encoder: {encoder}")
-                                    features = details.get("features", [])
-                                    if features:
-                                        st.caption(f"Analysis: {', '.join(features)}")
-                                    backbone = details.get("backbone")
-                                    if backbone:
-                                        st.caption(f"Backbone: {backbone}")
-                                    instability = details.get("instability")
-                                    if instability is not None and volatility is None:
-                                        st.caption(f"Frame variance: {instability:.4f}")
-                                    temporal_sim = details.get("temporal_sim")
-                                    if temporal_sim is not None:
-                                        st.caption(f"Temporal consistency (cos-sim): {temporal_sim:.4f}")
-                                    spa = details.get("spatial_anomaly")
-                                    if spa is not None:
-                                        st.caption(f"Spatial anomaly: {spa:.4f}")
-                                    note = details.get("note")
-                                    if note:
-                                        st.info(note)
+                                    if det_type_str == "lipfd":
+                                        # LipFD-specific fields
+                                        n_samples = details.get("num_samples")
+                                        if n_samples is not None:
+                                            st.caption(f"Lip-sync samples: {n_samples}")
+                                        fake_ratio = details.get("fake_ratio")
+                                        if fake_ratio is not None:
+                                            st.caption(f"Fake sample ratio: {fake_ratio:.1%}")
+                                        score_std = details.get("score_std")
+                                        if score_std is not None:
+                                            st.caption(f"Score std dev: {score_std:.4f}")
+                                        score_min = details.get("score_min")
+                                        score_max = details.get("score_max")
+                                        if score_min is not None and score_max is not None:
+                                            st.caption(f"Score range: {score_min:.3f} – {score_max:.3f}")
+                                        model_meta = details.get("model", {})
+                                        arch = model_meta.get("architecture") or details.get("architecture")
+                                        if arch:
+                                            st.caption(f"Architecture: {arch}")
+                                        wts = model_meta.get("weights_loaded")
+                                        if wts is not None:
+                                            st.caption(f"Pretrained weights: {'✅ yes' if wts else '⚠️ no (demo mode)'}")
+                                        st.caption("Paper: Liu et al., NeurIPS 2024")
+                                    else:
+                                        frame_count = details.get("frame_count") or details.get("per_frame_fake_probs", [])
+                                        if isinstance(frame_count, list):
+                                            frame_count = len(frame_count)
+                                        st.caption(f"Frames analyzed: {frame_count}")
+                                        volatility = details.get("volatility")
+                                        if volatility is not None:
+                                            st.caption(f"Motion Volatility: {volatility:.4f}")
+                                        encoder = details.get("encoder")
+                                        if encoder:
+                                            st.caption(f"Encoder: {encoder}")
+                                        features = details.get("features", [])
+                                        if features:
+                                            st.caption(f"Analysis: {', '.join(features)}")
+                                        backbone = details.get("backbone")
+                                        if backbone:
+                                            st.caption(f"Backbone: {backbone}")
+                                        instability = details.get("instability")
+                                        if instability is not None and volatility is None:
+                                            st.caption(f"Frame variance: {instability:.4f}")
+                                        temporal_sim = details.get("temporal_sim")
+                                        if temporal_sim is not None:
+                                            st.caption(f"Temporal consistency (cos-sim): {temporal_sim:.4f}")
+                                        spa = details.get("spatial_anomaly")
+                                        if spa is not None:
+                                            st.caption(f"Spatial anomaly: {spa:.4f}")
+                                        note = details.get("note")
+                                        if note:
+                                            st.info(note)
 
                         errors = result.get("errors", [])
                         if errors:
@@ -501,8 +524,8 @@ else:
     
     st.divider()
     
-    # Show all 5 detector options
-    col1, col2, col3, col4, col5 = st.columns(5)
+    # Show all 3 detector options
+    col1, col2, col3 = st.columns(3)
     
     with col1:
         st.subheader("🧠 DINOv3")
@@ -519,34 +542,6 @@ else:
         """)
     
     with col2:
-        st.subheader("🎯 ResNet18")
-        st.markdown("""
-        **Best for:** Quick analysis
-        
-        **Features:**
-        - Full frame analysis
-        - No face cropping
-        - Lightweight
-        - ImageNet pretrained
-        
-        **Requires:** No weights
-        """)
-    
-    with col3:
-        st.subheader("🌿 IvyFake")
-        st.markdown("""
-        **Best for:** Explainable detection
-        
-        **Features:**
-        - CLIP ViT-B/32
-        - Temporal artifacts
-        - Spatial artifacts
-        - Explainable outputs
-        
-        **Requires:** No weights
-        """)
-    
-    with col4:
         st.subheader("📊 D3")
         st.markdown("""
         **Best for:** Training-free detection
@@ -559,8 +554,8 @@ else:
         
         **Requires:** No weights
         """)
-
-    with col5:
+    
+    with col3:
         st.subheader("🎤 LipFD")
         st.markdown("""
         **Best for:** Lip-sync deepfakes
@@ -571,9 +566,9 @@ else:
         - Mel-spectrogram input
         - NeurIPS 2024
         
-        **Requires:** weights/lipfd_ckpt.pth
+        **Requires:** src/deepfake_guard/weights/lipfd_ckpt.pth
         """)
 
 # Footer
 st.divider()
-st.caption("Deepfake Guard v0.4.0 | Multi-detector support: DINOv3, ResNet18, IvyFake, D3, LipFD")
+st.caption("Deepfake Guard v0.4.0 | Multi-detector support: DINOv3, D3, LipFD")

@@ -18,7 +18,7 @@ Quick start::
     from deepfake_guard.models.lipfd import LipFDDetector
 
     # With pretrained weights (recommended)
-    det = LipFDDetector(weights_path="weights/lipfd_ckpt.pth")
+    det = LipFDDetector(weights_path="src/deepfake_guard/weights/lipfd_ckpt.pth")
     result = det.predict_video("suspicious_video.mp4")
 
     # Without weights (pipeline test only)

@@ -7,9 +7,6 @@ from typing import Any, Callable, Dict, Optional, Literal
 import torch
 
 from .models.dinov3.detector import Detector as DINOv3Detector
-from .models.resnet18.detector import ResNet18Detector, detect_video_resnet18
-from .models.ivyfake.detector import IvyFakeDetector
-from .models.ivyfake.multiscale_detector import MultiScaleIvyFakeDetector
 from .models.d3.detector import D3Detector
 from .models.lipfd.detector import LipFDDetector
 from .types import ModalityResult
@@ -28,9 +25,6 @@ class DeepfakeGuard:
     
     Supports multiple detector backends:
     - "dinov3": DINOv3-based detector (face cropping, 0.88+ AUROC)
-    - "resnet18": ResNet18-based detector (full frames, pretrained ImageNet)
-    - "ivyfake": IvyFake detector (CLIP-based with temporal/spatial analysis)
-    - "ivyfake-multiscale": Multi-scale IvyFake (temporal pyramid at 0.5/1.0/2.0 fps)
     - "d3": D3 detector (training-free, second-order temporal features)
     - "lipfd": LipFD detector (audio-visual lip-sync detection, NeurIPS 2024)
     """
@@ -39,7 +33,7 @@ class DeepfakeGuard:
         self,
         weights_path: Optional[str] = None,
         device: Optional[str] = None,
-        detector_type: Literal["dinov3", "resnet18", "ivyfake", "ivyfake-multiscale", "d3", "lipfd"] = "dinov3"
+        detector_type: Literal["dinov3", "d3", "lipfd"] = "dinov3"
     ):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.detector_type = detector_type
@@ -51,21 +45,12 @@ class DeepfakeGuard:
         # Visual detector (switchable)
         self.visual_detector = None
         self.face_cropper = None
-        self.resnet_detector = None
-        self.ivyfake_detector = None
-        self.ivyfake_multiscale_detector = None
         self.d3_detector = None
         self.lipfd_detector = None
         self.visual_weights_loaded = False
 
         if detector_type == "dinov3":
             self._init_dinov3(weights_path)
-        elif detector_type == "resnet18":
-            self._init_resnet18()
-        elif detector_type == "ivyfake":
-            self._init_ivyfake(weights_path)
-        elif detector_type == "ivyfake-multiscale":
-            self._init_ivyfake_multiscale(weights_path)
         elif detector_type == "d3":
             self._init_d3()
         elif detector_type == "lipfd":
@@ -108,27 +93,6 @@ class DeepfakeGuard:
         if resolved:
             self.load_visual_weights(resolved)
 
-    def _init_resnet18(self) -> None:
-        """Initialize ResNet18-based detector (pretrained ImageNet weights, no fine-tuning)."""
-        self.resnet_detector = ResNet18Detector(device=self.device)
-        self.visual_weights_loaded = True
-
-    def _init_ivyfake(self, weights_path: Optional[str] = None) -> None:
-        """Initialize IvyFake detector (CLIP-based with explainable features)."""
-        self.ivyfake_detector = IvyFakeDetector(
-            device=self.device,
-            weights_path=weights_path,
-        )
-        self.visual_weights_loaded = True
-
-    def _init_ivyfake_multiscale(self, weights_path: Optional[str] = None) -> None:
-        """Initialize multi-scale IvyFake detector (temporal pyramid)."""
-        self.ivyfake_multiscale_detector = MultiScaleIvyFakeDetector(
-            device=self.device,
-            weights_path=weights_path,
-        )
-        self.visual_weights_loaded = True
-
     def _init_d3(self, encoder: str = "xclip-16") -> None:
         """Initialize D3 detector (training-free, second-order temporal features)."""
         self.d3_detector = D3Detector(encoder_name=encoder, device=self.device)
@@ -149,15 +113,15 @@ class DeepfakeGuard:
 
     def set_detector(
         self,
-        detector_type: Literal["dinov3", "resnet18", "ivyfake", "ivyfake-multiscale", "d3", "lipfd"],
+        detector_type: Literal["dinov3", "d3", "lipfd"],
         weights_path: Optional[str] = None,
     ) -> None:
         """
         Switch detector backend.
         
         Args:
-            detector_type: "dinov3", "resnet18", "ivyfake", "ivyfake-multiscale", "d3", or "lipfd"
-            weights_path: Path to weights (used for dinov3, ivyfake, and lipfd)
+            detector_type: "dinov3", "d3", or "lipfd"
+            weights_path: Path to weights (used for dinov3 and lipfd)
         """
         if detector_type == self.detector_type:
             return
@@ -169,9 +133,6 @@ class DeepfakeGuard:
         self._model_info.clear()
         self.visual_detector = None
         self.face_cropper = None
-        self.resnet_detector = None
-        self.ivyfake_detector = None
-        self.ivyfake_multiscale_detector = None
         self.d3_detector = None
         self.lipfd_detector = None
         self.visual_weights_loaded = False
@@ -179,12 +140,6 @@ class DeepfakeGuard:
         # Reinitialize
         if detector_type == "dinov3":
             self._init_dinov3(weights_path)
-        elif detector_type == "resnet18":
-            self._init_resnet18()
-        elif detector_type == "ivyfake":
-            self._init_ivyfake(weights_path)
-        elif detector_type == "ivyfake-multiscale":
-            self._init_ivyfake_multiscale(weights_path)
         elif detector_type == "d3":
             self._init_d3()
         elif detector_type == "lipfd":
@@ -254,14 +209,10 @@ class DeepfakeGuard:
     # Per-detector trust priors: reflect how calibrated each score is.
     # DINOv3 is fine-tuned on deepfakes  → high trust.
     # D3 is training-free but principled  → medium trust.
-    # ResNet18 + IvyFake have untrained classification heads → low trust.
     _DETECTOR_TRUST: Dict[str, float] = {
         "dinov3":   1.0,
         "lipfd":    0.85,             # NeurIPS 2024, trained on lip-sync deepfakes; 91.2% acc on FakeAVCeleb
         "d3":       0.6,
-        "ivyfake":  0.5,              # principled CLIP cosine-sim signal, not trained on deepfakes
-        "ivyfake-multiscale": 0.55,   # multi-scale temporal pyramid — slightly better coverage
-        "resnet18": 0.2,              # untrained head on ImageNet features
     }
 
     def _aggregate_scores(self, modality_results: Dict[str, Dict[str, Any]]) -> float:
@@ -296,12 +247,6 @@ class DeepfakeGuard:
         """Run visual analysis based on current detector type."""
         if self.detector_type == "dinov3":
             return self._run_dinov3_analysis(video_path)
-        elif self.detector_type == "resnet18":
-            return self._run_resnet18_analysis(video_path)
-        elif self.detector_type == "ivyfake":
-            return self._run_ivyfake_analysis(video_path)
-        elif self.detector_type == "ivyfake-multiscale":
-            return self._run_ivyfake_multiscale_analysis(video_path)
         elif self.detector_type == "d3":
             return self._run_d3_analysis(video_path)
         elif self.detector_type == "lipfd":
@@ -344,33 +289,6 @@ class DeepfakeGuard:
         details["detector_type"] = "dinov3"
 
         return ModalityResult(score=score, label=label, details=details).__dict__
-
-    def _run_resnet18_analysis(self, video_path: str) -> Dict[str, Any]:
-        """ResNet18-based visual analysis (full frames, no face cropping)."""
-        result = self.resnet_detector.predict_video(video_path)
-        return ModalityResult(
-            score=result["score"],
-            label=result["label"],
-            details=result["details"]
-        ).__dict__
-
-    def _run_ivyfake_analysis(self, video_path: str) -> Dict[str, Any]:
-        """IvyFake-based visual analysis (CLIP-based with temporal/spatial features)."""
-        result = self.ivyfake_detector.predict_video(video_path)
-        return ModalityResult(
-            score=result["score"],
-            label=result["label"],
-            details=result["details"]
-        ).__dict__
-
-    def _run_ivyfake_multiscale_analysis(self, video_path: str) -> Dict[str, Any]:
-        """Multi-scale IvyFake analysis (temporal pyramid at multiple fps)."""
-        result = self.ivyfake_multiscale_detector.predict_video(video_path)
-        return ModalityResult(
-            score=result["score"],
-            label=result["label"],
-            details=result["details"]
-        ).__dict__
 
     def _run_d3_analysis(self, video_path: str) -> Dict[str, Any]:
         """D3-based visual analysis (training-free, second-order temporal features)."""

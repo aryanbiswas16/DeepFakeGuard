@@ -15,12 +15,12 @@ Usage::
 
     from deepfake_guard.models.lipfd import LipFDDetector
 
-    det = LipFDDetector(weights_path="weights/lipfd_ckpt.pth")
+    det = LipFDDetector(weights_path="src/deepfake_guard/weights/lipfd_ckpt.pth")
     result = det.predict_video("video.mp4")
     print(result["overall_label"], result["overall_score"])
 
 The detector follows the DeepFakeGuard result format so it can be used
-interchangeably with DINOv3, ResNet18, IvyFake, and D3 detectors.
+interchangeably with DINOv3 and D3 detectors.
 """
 
 from __future__ import annotations

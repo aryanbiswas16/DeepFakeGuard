@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "deepfake_guard"
 version = "0.4.0"
-description = "Multimodal Deepfake Detection Library with Multiple Detector Backends (DINOv3, ResNet18, IvyFake, D3, LipFD)"
+description = "Multimodal Deepfake Detection Library with Multiple Detector Backends (DINOv3, D3, LipFD)"
 readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT"}
@@ -47,20 +47,11 @@ dev = [
 ]
 ui = [
     "streamlit>=1.25.0",
-    "requests>=2.31.0",
     "plotly>=5.15.0"
-]
-api = [
-    "fastapi>=0.100.0",
-    "uvicorn>=0.23.0",
-    "python-multipart>=0.0.6"
 ]
 all = [
     "streamlit>=1.25.0",
-    "requests>=2.31.0",
-    "fastapi>=0.100.0",
-    "uvicorn>=0.23.0",
-    "python-multipart>=0.0.6"
+    "plotly>=5.15.0"
 ]
 
 [project.urls]
