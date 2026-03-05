@@ -177,6 +177,16 @@ class LipFDDetector:
 
         num_samples = full_imgs.shape[0]
 
+        # Safety: cap sample count to prevent GPU OOM on very long videos
+        _MAX_SAMPLES = 20
+        if num_samples > _MAX_SAMPLES:
+            full_imgs = full_imgs[:_MAX_SAMPLES]
+            crops = [
+                [c[:_MAX_SAMPLES] for c in scale_crops]
+                for scale_crops in crops
+            ]
+            num_samples = _MAX_SAMPLES
+
         # --- Inference (in mini-batches) ---
         all_scores: List[float] = []
 
@@ -196,6 +206,11 @@ class LipFDDetector:
             pred_logits, _, _ = self.model(batch_crops, features)
             probs = torch.sigmoid(pred_logits).flatten().cpu().tolist()
             all_scores.extend(probs)
+
+            # Free GPU memory between batches to prevent OOM
+            del batch_imgs, batch_crops, features, pred_logits
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
 
         # --- Aggregate scores ---
         if not all_scores:

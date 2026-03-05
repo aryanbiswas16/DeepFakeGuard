@@ -145,12 +145,19 @@ def generate_mel_spectrogram(
 # ---------------------------------------------------------------------------
 # Frame extraction
 # ---------------------------------------------------------------------------
+# Safety cap: never hold more than MAX_FRAMES_IN_MEMORY raw frames.
+# A single 1080p BGR frame ≈ 6 MB, so 600 frames ≈ 3.6 GB — a safe
+# upper bound for most consumer machines.
+MAX_FRAMES_IN_MEMORY = 600
+
+
 def extract_frames(
     video_path: str,
     max_frames: Optional[int] = None,
 ) -> Tuple[List[np.ndarray], float, int]:
     """
-    Extract all (or up to *max_frames*) frames from a video.
+    Extract frames from a video up to *max_frames* (default: capped at
+    ``MAX_FRAMES_IN_MEMORY`` to avoid OOM crashes).
 
     Returns
     -------
@@ -165,6 +172,9 @@ def extract_frames(
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    # Apply a safety cap so we never blow out system RAM
+    limit = max_frames if max_frames else MAX_FRAMES_IN_MEMORY
     frames: List[np.ndarray] = []
 
     while True:
@@ -172,7 +182,7 @@ def extract_frames(
         if not ret:
             break
         frames.append(frame)
-        if max_frames and len(frames) >= max_frames:
+        if len(frames) >= limit:
             break
 
     cap.release()
@@ -215,7 +225,16 @@ def build_composite_images(
     composites : list[np.ndarray]
         Each element is an (H, W, 3) uint8 composite image.
     """
-    frames, fps, total_count = extract_frames(video_path)
+    # Only read the frames we actually need: n_extract windows of
+    # window_len frames each.  In the worst case that's
+    # n_extract + window_len frames — far less than the whole video.
+    needed_frames = min(
+        n_extract * window_len + window_len,  # generous upper bound
+        MAX_FRAMES_IN_MEMORY,
+    )
+    frames, fps, total_count = extract_frames(
+        video_path, max_frames=needed_frames,
+    )
 
     if len(frames) < window_len + 1:
         warnings.warn(
@@ -392,18 +411,23 @@ def preprocess_video(
         [[] for _ in range(window_len)] for _ in range(3)
     ]
 
-    for comp in composites:
+    for idx, comp in enumerate(composites):
         full_img, crops = composite_to_tensors(comp, window_len=window_len)
         full_imgs_list.append(full_img)
         for s in range(3):
             for f in range(window_len):
                 crops_batched[s][f].append(crops[s][f])
+        # Free the raw composite immediately — it's no longer needed
+        composites[idx] = None  # type: ignore[assignment]
 
     # Stack into batch tensors
     full_imgs = torch.stack(full_imgs_list, dim=0)  # (N, 3, 1120, 1120)
+    del full_imgs_list  # free intermediate list
+
     crops_tensors: List[List[torch.Tensor]] = [
         [torch.stack(crops_batched[s][f], dim=0) for f in range(window_len)]
         for s in range(3)
     ]
+    del crops_batched  # free intermediate lists
 
     return full_imgs, crops_tensors

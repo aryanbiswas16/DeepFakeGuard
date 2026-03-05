@@ -293,18 +293,27 @@ with col2:
 if uploaded_file is not None:
     st.divider()
     
-    # Save uploaded file
+    # Save uploaded file — stream in chunks to avoid doubling RAM usage
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
-        tmp.write(uploaded_file.getvalue())
+        # Write in 8 MB chunks instead of getvalue() which loads everything at once
+        uploaded_file.seek(0)
+        while True:
+            chunk = uploaded_file.read(8 * 1024 * 1024)
+            if not chunk:
+                break
+            tmp.write(chunk)
         video_path = tmp.name
     
     # Display video
+    video_size_mb = os.path.getsize(video_path) / 1024 / 1024
     col_video, col_results = st.columns([1, 1])
     
     with col_video:
         st.subheader("📺 Video Preview")
-        st.video(uploaded_file)
-        st.caption(f"File: {uploaded_file.name} ({len(uploaded_file.getvalue()) / 1024 / 1024:.1f} MB)")
+        # Stream from the temp file path instead of re-reading the
+        # UploadedFile into memory a second time.
+        st.video(video_path)
+        st.caption(f"File: {uploaded_file.name} ({video_size_mb:.1f} MB)")
     
     with col_results:
         st.subheader("🎯 Detection Results")
@@ -320,9 +329,18 @@ if uploaded_file is not None:
 
                     if detector_type == "all":
                         # ── Ensemble mode ──────────────────────────────────
+                        import gc
                         all_results = {}
                         for det_name, det_guard in guards.items():
                             all_results[det_name] = det_guard.detect_video(video_path)
+                            # Free GPU/CPU memory between detectors to avoid OOM
+                            gc.collect()
+                            try:
+                                import torch as _torch
+                                if _torch.cuda.is_available():
+                                    _torch.cuda.empty_cache()
+                            except Exception:
+                                pass
 
                         scores = {n: r.get("overall_score", 0.0) for n, r in all_results.items()}
                         labels = {n: r.get("overall_label", "?") for n, r in all_results.items()}

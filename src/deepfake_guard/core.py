@@ -65,8 +65,9 @@ class DeepfakeGuard:
             f"{detector_type.upper()} deepfake detection"
         )
 
-    # Path to the weights bundled inside the installed package
+    # Paths to the weights bundled inside the installed package
     _BUNDLED_DINOV3_WEIGHTS = Path(__file__).parent / "weights" / "dinov3_best_v3.pth"
+    _BUNDLED_LIPFD_WEIGHTS  = Path(__file__).parent / "weights" / "lipfd_ckpt.pth"
 
     def _init_dinov3(self, weights_path: Optional[str] = None) -> None:
         """Initialize DINOv3-based detector.
@@ -100,7 +101,6 @@ class DeepfakeGuard:
 
     def _init_lipfd(self, weights_path: Optional[str] = None) -> None:
         """Initialize LipFD detector (audio-visual lip-sync deepfake detection, NeurIPS 2024).
-
         Weights are resolved automatically:
           1. Explicit ``weights_path`` argument (if provided and exists)
           2. Bundled weights at ``src/deepfake_guard/weights/lipfd_ckpt.pth``
@@ -275,18 +275,32 @@ class DeepfakeGuard:
             crop = self.face_cropper.crop(frame, return_metadata=False)
             if crop:
                 cropped_frames.append(crop)
+        # Free original frames — we only need crops from here
+        del frames
 
         if not cropped_frames:
             return {"error": "No faces detected in video"}
 
         processed_frames = simulate_compression(cropped_frames)
-        input_tensor = stack_frames(
-            processed_frames,
-            self.visual_detector.preprocess,
-            self.device
-        )
+        del cropped_frames  # free pre-compression copies
 
-        det_result = self.visual_detector.predict_video(input_tensor)
+        # Build tensor inside no_grad to avoid storing unnecessary
+        # computation graphs that bloat memory.
+        with torch.no_grad():
+            input_tensor = stack_frames(
+                processed_frames,
+                self.visual_detector.preprocess,
+                self.device
+            )
+            del processed_frames
+
+            det_result = self.visual_detector.predict_video(input_tensor)
+            del input_tensor
+
+        # Free GPU cache after inference
+        if self.device == "cuda":
+            torch.cuda.empty_cache()
+
         det_result = det_result.__dict__ if hasattr(det_result, "__dict__") else det_result
 
         score = float(det_result.get("score", 0.0))
@@ -299,6 +313,9 @@ class DeepfakeGuard:
     def _run_d3_analysis(self, video_path: str) -> Dict[str, Any]:
         """D3-based visual analysis (training-free, second-order temporal features)."""
         result = self.d3_detector.predict_video(video_path)
+        # Free GPU cache after inference
+        if self.device == "cuda":
+            torch.cuda.empty_cache()
         return ModalityResult(
             score=result["score"],
             label=result["label"],
@@ -314,6 +331,10 @@ class DeepfakeGuard:
             result = self.lipfd_detector.predict_video(video_path)
         except Exception as exc:
             return {"error": f"LipFD analysis failed: {exc}"}
+        finally:
+            # Free GPU cache after inference regardless of success/failure
+            if self.device == "cuda":
+                torch.cuda.empty_cache()
 
         if result.get("overall_label") == "ERROR":
             errors = result.get("errors", ["Unknown LipFD error"])
