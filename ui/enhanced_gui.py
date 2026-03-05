@@ -153,9 +153,22 @@ detector_info = {
 # Show detector info
 if detector_type == "all":
     st.sidebar.markdown("**🔀 Ensemble Mode**")
-    st.sidebar.markdown("_Runs all 3 detectors and compares their verdicts._")
-    st.sidebar.markdown("- DINOv3 · D3 · LipFD")
-    st.sidebar.markdown("✅ **Pros:** Cross-model agreement, richer analysis")
+    st.sidebar.markdown("_Domain-aware fusion of all 3 detectors._")
+    st.sidebar.markdown("**Detectors:**")
+    st.sidebar.markdown("- 🧠 DINOv3 → face-swap deepfakes")
+    st.sidebar.markdown("- 📊 D3 → AI-generated video")
+    st.sidebar.markdown("- 🎤 LipFD → lip-sync deepfakes")
+    st.sidebar.markdown("**Fusion features:**")
+    st.sidebar.markdown("- Trust × certainty weighting")
+    st.sidebar.markdown("- Outlier veto (domain mismatch)")
+    st.sidebar.markdown("- Cross-modal agreement analysis")
+    st.sidebar.markdown("- Natural-language explanation")
+    st.sidebar.markdown("**📝 Applicability Notes:**")
+    st.sidebar.markdown("- 🧠 DINOv3 is most reliable when a clear face is visible")
+    st.sidebar.markdown("- 🎤 LipFD requires visible lips and usable audio")
+    st.sidebar.markdown("- 📊 D3 is most informative when there is temporal movement")
+    st.sidebar.markdown("- ⚠️ If one modality is inapplicable, rely on the others")
+    st.sidebar.markdown("✅ **Pros:** Covers all forgery families")
     st.sidebar.markdown("⚠️ **Cons:** Slower — loads all models")
 else:
     info = detector_info[detector_type]
@@ -328,41 +341,34 @@ if uploaded_file is not None:
                             d3g.d3_detector.threshold = d3_threshold
 
                     if detector_type == "all":
-                        # ── Ensemble mode ──────────────────────────────────
-                        import gc
-                        all_results = {}
-                        for det_name, det_guard in guards.items():
-                            all_results[det_name] = det_guard.detect_video(video_path)
-                            # Free GPU/CPU memory between detectors to avoid OOM
-                            gc.collect()
-                            try:
-                                import torch as _torch
-                                if _torch.cuda.is_available():
-                                    _torch.cuda.empty_cache()
-                            except Exception:
-                                pass
+                        # ── Ensemble mode (domain-aware fusion) ────────────
+                        from deepfake_guard import DeepfakeGuard as _DG
 
-                        scores = {n: r.get("overall_score", 0.0) for n, r in all_results.items()}
-                        labels = {n: r.get("overall_label", "?") for n, r in all_results.items()}
-                        fake_votes = sum(1 for lbl in labels.values() if lbl == "FAKE")
+                        ensemble = _DG.ensemble_detect_video(
+                            guards, video_path, threshold=threshold,
+                        )
 
-                        # Weighted ensemble score matching core.py trust priors
-                        _TRUST = {"dinov3": 1.0, "lipfd": 0.85, "d3": 0.6}
-                        w_sum, w_total = 0.0, 0.0
-                        for n, s in scores.items():
-                            t = _TRUST.get(n, 0.5)
-                            c = abs(s - 0.5) * 2.0
-                            w = t * (0.1 + 0.9 * c)
-                            w_sum += s * w
-                            w_total += w
-                        ensemble_score = w_sum / w_total if w_total > 0 else 0.0
+                        ensemble_score = ensemble["overall_score"]
+                        ensemble_label = ensemble["overall_label"]
+                        scores = ensemble["scores"]
+                        labels = ensemble["labels"]
+                        agreement = ensemble["agreement"]
+                        explanation = ensemble["explanation"]
+                        outliers = ensemble.get("outliers", {})
+                        contribs = ensemble.get("contributions", {})
+                        applicability = ensemble.get("applicability", {})
+                        all_results = ensemble["detector_results"]
 
-                        if ensemble_score > threshold:
+                        fake_votes = sum(1 for l in labels.values() if l == "FAKE")
+
+                        # ── Verdict banner ──────────────────────────────
+                        if ensemble_label == "FAKE":
                             st.error("## 🚨 ENSEMBLE VERDICT: FAKE")
                         else:
                             st.success("## ✅ ENSEMBLE VERDICT: REAL")
 
-                        vcols = st.columns(3)
+                        # ── Top-line metrics ────────────────────────────
+                        vcols = st.columns(4)
                         with vcols[0]:
                             st.metric("Ensemble Score", f"{ensemble_score:.1%}")
                         with vcols[1]:
@@ -370,19 +376,89 @@ if uploaded_file is not None:
                         with vcols[2]:
                             certainty = abs(ensemble_score - 0.5) * 2
                             st.metric("Certainty", f"{certainty:.1%}")
+                        with vcols[3]:
+                            _agree_icons = {
+                                "unanimous": "✅ Unanimous",
+                                "majority-fake": "⚠️ Majority FAKE",
+                                "majority-real": "✅ Majority REAL",
+                                "split": "🔶 Split",
+                                "inconclusive": "❓ Inconclusive",
+                            }
+                            st.metric("Agreement", _agree_icons.get(agreement, agreement))
 
+                        # ── Natural-language explanation ─────────────
+                        st.markdown("### 💬 Explanation")
+                        st.info(explanation)
+                        st.caption(
+                            "Applicability notes: DINOv3 works best with clear faces; "
+                            "LipFD needs visible lips + usable audio; D3 is strongest "
+                            "when there is enough temporal movement."
+                        )
+
+                        # ── Detector comparison chart ───────────────
                         st.markdown("### 🔀 Detector Comparison")
                         render_ensemble_chart(scores, labels, threshold)
 
-                        st.markdown("### 📈 Per-Detector Timelines")
+                        # ── Contribution breakdown ───────────────────
+                        st.markdown("### ⚖️ Fusion Weights")
+                        _domain_labels = {
+                            "dinov3": "Face-Swap Deepfake",
+                            "d3": "AI-Generated Video",
+                            "lipfd": "Lip-Sync Deepfake",
+                        }
+                        _app_icons = {
+                            "high": "🟢",
+                            "medium": "🟡",
+                            "low": "🟠",
+                            "unavailable": "⚫",
+                        }
+                        for det_name in sorted(contribs.keys()):
+                            c = contribs[det_name]
+                            dom = _domain_labels.get(det_name, "Unknown")
+                            outlier_tag = " 🚫 OUTLIER (vetoed)" if c.get("outlier") else ""
+                            icon = "🔴" if labels.get(det_name) == "FAKE" else "🟢"
+                            app = applicability.get(det_name, {})
+                            app_level = app.get("level", "high")
+                            app_reason = app.get("reason", "")
+                            app_icon = _app_icons.get(app_level, "🟢")
+                            st.markdown(
+                                f"{icon} **{det_name.upper()}** ({dom}) — "
+                                f"Score: {c.get('score', 0):.1%} · "
+                                f"Trust: {c.get('trust', 0):.0%} · "
+                                f"Certainty: {c.get('certainty', 0):.1%} · "
+                                f"Applicability: {app_icon} {str(app_level).upper()} · "
+                                f"Effective weight: {c.get('weight', 0):.3f}"
+                                f"{outlier_tag}"
+                            )
+                            if app_reason:
+                                st.caption(f"{det_name.upper()} applicability note: {app_reason}")
+
+                        # ── Per-detector detail panels ──────────────
+                        st.markdown("### 📈 Per-Detector Details")
                         for det_name, res in all_results.items():
                             per_frame = _get_per_frame_probs(res)
-                            det_label = labels[det_name]
+                            det_label = labels.get(det_name, "?")
+                            det_score = scores.get(det_name, 0)
+                            is_outlier = outliers.get(det_name, False)
+                            app = applicability.get(det_name, {})
+                            app_level = app.get("level", "high")
+                            app_icon = _app_icons.get(app_level, "🟢")
                             icon = "🔴" if det_label == "FAKE" else "🟢"
+                            outlier_suffix = " ⛔ OUTLIER" if is_outlier else ""
                             with st.expander(
-                                f"{icon} {det_name.upper()} — {scores[det_name]:.1%} ({det_label})",
+                                f"{icon} {det_name.upper()} — {det_score:.1%} ({det_label}) · {app_icon} {str(app_level).upper()}{outlier_suffix}",
                                 expanded=True
                             ):
+                                if is_outlier:
+                                    st.warning(
+                                        f"⚠️ {det_name.upper()} was flagged as an "
+                                        "outlier (contradicts all other detectors) "
+                                        "and was heavily down-weighted in the "
+                                        "ensemble score."
+                                    )
+                                app_reason = app.get("reason", "")
+                                if app_reason:
+                                    st.caption(f"Applicability: {app_reason}")
                                 if per_frame:
                                     render_frame_chart(per_frame, threshold, det_name.upper())
                                 else:
@@ -404,16 +480,16 @@ if uploaded_file is not None:
                                     if fake_ratio is not None:
                                         n_samples = av.get("num_samples", "?")
                                         st.caption(f"Lip-sync samples: {n_samples}  |  fake ratio: {fake_ratio:.1%}")
-                                        st.progress(scores[det_name], text=f"Mean P(fake): {scores[det_name]:.1%}")
+                                        st.progress(det_score, text=f"Mean P(fake): {det_score:.1%}")
 
-                        all_errs = [e for r in all_results.values() for e in r.get("errors", [])]
+                        all_errs = ensemble.get("errors", [])
                         if all_errs:
                             with st.expander("⚠️ Errors"):
                                 for err in all_errs:
                                     st.warning(err)
 
-                        with st.expander("📄 Raw JSON (all detectors)"):
-                            st.json(all_results)
+                        with st.expander("📄 Raw JSON (ensemble)"):
+                            st.json(ensemble)
 
                     else:
                         # ── Single-detector mode ────────────────────────────
@@ -588,4 +664,4 @@ else:
 
 # Footer
 st.divider()
-st.caption("Deepfake Guard v0.4.0 | Multi-detector support: DINOv3, D3, LipFD")
+st.caption("Deepfake Guard v0.5.0 | Ensemble: domain-aware trust × certainty with outlier veto | DINOv3, D3, LipFD")

@@ -173,10 +173,33 @@ class D3Detector:
     @staticmethod
     def _extract_frames(video_path: str, num_frames: int = 16) -> List[np.ndarray]:
         cap = cv2.VideoCapture(video_path)
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if total == 0:
-            cap.release()
+        if not cap.isOpened():
             return []
+
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        # Many non-standard containers (TikTok downloads, WebM, VFR
+        # videos) report FRAME_COUNT as 0 or negative.  In that case,
+        # fall back to sequential reading, then uniformly sample.
+        if total <= 0:
+            all_frames: List[np.ndarray] = []
+            _MAX_SEQ_READ = 600  # safety cap
+            while len(all_frames) < _MAX_SEQ_READ:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                all_frames.append(frame)
+            cap.release()
+            if len(all_frames) == 0:
+                return []
+            if len(all_frames) <= num_frames:
+                return all_frames
+            indices = np.linspace(
+                0, len(all_frames) - 1, num_frames, dtype=int,
+            )
+            return [all_frames[i] for i in indices]
+
+        # Standard path: seek to uniformly-spaced positions
         indices = np.linspace(0, total - 1, num_frames, dtype=int)
         frames: List[np.ndarray] = []
         for idx in indices:
@@ -185,6 +208,28 @@ class D3Detector:
             if ret:
                 frames.append(frame)
         cap.release()
+
+        # If seeking yielded too few frames (broken index), retry
+        # with sequential read.
+        if len(frames) < 3 and total > 3:
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                return frames
+            all_frames = []
+            _MAX_SEQ_READ = 600
+            while len(all_frames) < _MAX_SEQ_READ:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                all_frames.append(frame)
+            cap.release()
+            if len(all_frames) <= num_frames:
+                return all_frames
+            seq_indices = np.linspace(
+                0, len(all_frames) - 1, num_frames, dtype=int,
+            )
+            return [all_frames[i] for i in seq_indices]
+
         return frames
 
     # ------------------------------------------------------------------

@@ -1,3 +1,6 @@
+% ==================================
+% DO NOT EDIT
+% ==================================
 \documentclass[conference]{IEEEtran}
 \usepackage{cite}
 \usepackage{amsmath,amssymb,amsfonts}
@@ -9,8 +12,20 @@
 \usepackage{xcolor}
 \usepackage{hyperref}
 \usepackage{float}
+\usepackage{booktabs}
+\usepackage{enumitem} 
+\usepackage{dblfloatfix}
+\usepackage[section]{placeins}
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric, arrows.meta, positioning, fit, backgrounds, calc}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\setlength{\textfloatsep}{8pt plus 2pt minus 2pt}
+\setlength{\floatsep}{6pt plus 2pt minus 2pt}
+\setlength{\intextsep}{6pt plus 2pt minus 2pt}
 \def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
     T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
 \makeatletter
 \newcommand{\linebreakand}{%
   \end{@IEEEauthorhalign}
@@ -18,300 +33,693 @@
   \mbox{}\hfill\begin{@IEEEauthorhalign}
 }
 \makeatother
+% ==================================
+% END
+% ==================================
 
 \begin{document}
 
-\title{DeepfakeGuard: A Multimodal Python Library for Deepfake Detection}
+\title{DeepfakeGuard: An Open-Source Multi-Modal Toolkit for Detecting AI-Generated Video and Audio}
 
 \author{
-\IEEEauthorblockN{Aryan Biswas}
-\IEEEauthorblockA{\textit{Queen's University} \\ 21ab43@queensu.ca}
-\and
-\IEEEauthorblockN{Kevin Hu}
-\IEEEauthorblockA{\textit{Queen's University} \\ 21kh25@queensu.ca}
-\and
-\IEEEauthorblockN{Team Member 3}
-\IEEEauthorblockA{\textit{Queen's University} \\ email@queensu.ca}
-\and
-\IEEEauthorblockN{Team Member 4}
-\IEEEauthorblockA{\textit{Queen's University} \\ email@queensu.ca}
+\IEEEauthorblockN{Aryan Biswas, LipFD Author, D3 Author}
+\IEEEauthorblockA{
+    \textit{Queen's University, School of Computing} \\
+    Kingston, Ontario, Canada \\
+    \href{mailto:aryanbiswas16@gmail.com}{aryanbiswas16@gmail.com}
 }
-
+}
 \maketitle
 
+% ================================================================
+%  ABSTRACT
+% ================================================================
+
 \begin{abstract}
-Replace with your group's shared abstract. 100--150 words covering
-motivation, problem, methodology, results, and significance.
+AI-generated video and audio are no longer a curiosity but an everyday attack surface for fraud, harassment, and political manipulation. High-quality deepfakes erode people's ability to trust what they see and hear, undermining democratic deliberation, financial security, and personal dignity, yet effective defensive tooling remains difficult to access outside of research settings. Recent incident reports and international safety assessments document hundreds of thousands of circulating deepfakes and show that human observers correctly flag high-quality synthetic media only a small fraction of the time. 
+
+We present DeepfakeGuard, an open-source Python library that unifies three complementary detection modalities into a single, pip-installable framework: (1) a DINOv3 Vision Transformer detector that achieves 0.88 AUROC under strict cross-dataset evaluation via parameter-efficient LayerNorm tuning; (2) a LipFD audio-visual detector that identifies lip-sync deepfakes by exploiting temporal inconsistency between audio and visual lip movements; and (3) a D3 temporal-volatility detector that requires zero training and flags AI-generated video through second-order motion features. All three modalities are switchable at runtime and exposed through a unified Python API, enabling use by journalists, content moderators, and fraud teams without bespoke ML expertise. We argue that open, multi-modal defensive tooling is a necessary counterweight to the democratization of generative AI.
 \end{abstract}
 
+% ================================================================
+%  INTRODUCTION
+% ================================================================
+
 \section{Introduction}
+
+\subsection{Deepfakes as an Ethical and Societal Threat}
+Generative AI systems have crossed a critical threshold: synthetic video and audio are now sufficiently convincing that ordinary viewers struggle to tell them apart from authentic media, even when alerted to the possibility of manipulation. High-quality deepfakes are already being used to steal millions of dollars through executive-impersonation scams (such as the \$25 million Arup fraud in 2024~\cite{cnn2024arup}), to produce non-consensual sexual imagery that disproportionately targets women and girls, and to seed misinformation into tightly contested political environments~\cite{ai_safety_report}. 
+
+Quantitative estimates vary, but recent industry and security reports agree that at least hundreds of thousands of deepfake videos and voice clips are circulating on major platforms~\cite{sensity2024}. At the same time, controlled studies suggest that humans correctly identify high-quality AI-generated media only in a small minority of cases, barely above chance on binary tasks~\cite{ai_safety_report}. This combination of scale, realism, and human fallibility makes deepfakes an AI ethics problem in the strong sense: they threaten core values such as autonomy, consent, and democratic legitimacy at population scale.
+
+\subsection{The Detection Gap and Governance Context}
+The asymmetry between offensive and defensive tooling is stark. Consumer-grade applications make it trivial to create plausible face-swap videos or cloned-voice audio with no ML expertise, while state-of-the-art detectors remain scattered across academic code repositories with fragile dependencies, narrow modality coverage, and little attention to usability.
+
+Meanwhile, regulators are beginning to respond. The European Union's AI Act, emerging election-integrity guidelines, and sector-specific standards for financial services all contemplate labeling or detecting AI-generated content, but they rarely prescribe specific technical mechanisms. In this governance landscape, making robust deepfake detection available as infrastructure is itself an ethical intervention.
+
+\subsection{Design Goals for DeepfakeGuard}
+DeepfakeGuard is our attempt to narrow this detection gap in a way that is explicitly informed by AI ethics concerns. The toolkit is designed around three goals:
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Multi-modal coverage.} Modern campaigns routinely combine manipulated video with cloned audio. DeepfakeGuard offers visual, audio-visual lip-sync, and temporal modalities that operate independently but can be composed.
+    \item \textbf{Robust, generalizable detection.} We prioritize architectures and training strategies (such as self-supervised Vision Transformers and training-free temporal volatility) that empirically generalize to unseen generators and compression settings.
+    \item \textbf{Accessible deployment.} The library installs via \texttt{pip} and exposes a simple Python API, lowering the barrier for journalists, fact-checkers, and smaller platforms.
+\end{itemize}
+
+\subsection{Contributions}
+This paper makes the following contributions:
+\begin{enumerate}[leftmargin=*]
+    \item We present DeepfakeGuard, an open-source Python toolkit that unifies visual, temporal, and audio deepfake detection into a single pip-installable library.
+    \item We contribute three detection modalities, highlighted by a parameter-efficient DINOv3 visual detector that tunes only 8.3\% of parameters to achieve a 0.88 cross-dataset AUROC, outperforming traditional baselines by 23 points (Section~\ref{sec:dinov3}).
+    \item We analyze the ethical implications of deploying such detectors, including dual-use risks, potential demographic biases, and the dangers of over-reliance on automated tools (Section~\ref{sec:ethics}).
+\end{enumerate}
+
+% ================================================================
+%  BACKGROUND & RELATED WORK
+% ================================================================
+
+\section{Background and Related Work}
+
+\subsection{The Deepfake Generation Landscape}
+Deepfake generation techniques have evolved rapidly across both visual and audio domains. Face-swap methods such as DeepFaceLab~\cite{deepfacelab} transplant one person's likeness onto another's body in video. Face-reenactment methods such as Face2Face~\cite{thies2016face2face} manipulate facial expressions while preserving identity. More recently, diffusion-based video generators can synthesize photorealistic video from text prompts alone. On the audio side, text-to-speech systems including VALL-E~\cite{valle} can clone a speaker's voice from seconds of reference audio, defeating traditional speaker-verification systems.
+
+\subsection{Visual Deepfake Detection}
+Visual detection methods broadly fall into four families: artifact-based methods~\cite{face_artifacts}; temporal methods~\cite{temporal_detection}; biological signal methods~\cite{biological_signals}; and representation learning methods that train discriminative features end-to-end. Among representation-learning approaches, Xception~\cite{rossler2019faceforensics} and EfficientNet~\cite{efficientnet} have established strong baselines on FaceForensics++, but suffer AUROC degradation of 0.05 to 0.20 when evaluated on unseen datasets~\cite{celebdf}. Self-supervised Vision Transformers such as DINOv3~\cite{oquab2024dinov3} have shown promising generalization due to their reliance on low-frequency structural cues rather than generator-specific artifacts~\cite{rethinking_forgery}.
+
+\subsection{Audio-Visual Lip-Sync Detection}
+A complementary detection strategy exploits the tight temporal coupling between speech audio and lip movements. When a deepfake replaces a speaker's face without perfectly re-synthesizing the corresponding lip dynamics, subtle audio-visual mismatches arise. LipFD~\cite{lipfd2024} formalises this insight by combining a frozen CLIP ViT-L/14 encoder for global audio-visual features with a Region-Awareness ResNet-50 backbone that attends to multi-scale lip crops, trained on the AVLips dataset. Our LipFD-based modality follows this paradigm and is detailed in Section~\ref{sec:lipfd}.
+
+\subsection{Training-Free Detection}
+The D3 method~\cite{zheng2025d3} observes that real video exhibits high second-order temporal volatility, while AI-generated video exhibits anomalously low volatility due to the smoothness priors of diffusion and autoregressive generators. Because this property is measured from any pre-trained vision encoder without fine-tuning, D3 naturally generalizes to unseen generators and is detailed in Section~\ref{sec:d3}.
+
+% ================================================================
+%  SYSTEM OVERVIEW
+% ================================================================
+
+\section{System Overview} \label{sec:system}
+
+\subsection{Architecture}
+DeepfakeGuard serves two primary audiences: researchers who need reproducible baselines, and developers who need a programmatic API for production pipelines. The library is organized around a central orchestrator class that manages detector initialization, weight loading, and result aggregation. Each detection modality is encapsulated as an independent module that conforms to a shared interface: given a file path, it returns a normalized score in $[0, 1]$ (where 1 = certainly fake), a binary label, and a details dictionary containing modality-specific diagnostics.
+
+\begin{table}[!t]
+\centering
+\caption{Detection modalities included in DeepfakeGuard v0.4.}
+\label{tab:modalities}
+\begin{tabular}{l@{\hskip 6pt}l@{\hskip 6pt}l@{\hskip 6pt}l}
+\toprule
+\textbf{Modality} & \textbf{Signal} & \textbf{Backbone} & \textbf{Training} \\
+\midrule
+DINOv3      & Face crops  & ViT-B/16         & Fine-tuned \\
+LipFD       & Lips + audio & CLIP ViT-L/14 + ResNet-50 & Fine-tuned \\
+D3          & Full frames & xCLIP-B/16       & Training-free \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+At inference time, the orchestrator routes the input to the active detector, applies modality-specific preprocessing, and returns a unified result dictionary. Detectors can be switched at runtime via a single \texttt{set\_detector} call.
+
+\subsection{Python API}
+The public interface consists of two calls: \texttt{from deepfakeguard import DeepfakeGuard}, followed by \texttt{detect(video\_path)} and \texttt{set\_detector(name)}. 
+
+% ================================================================
+%  DINOv3 VISUAL DETECTOR
+% ================================================================
+
+\section{DINOv3 Visual Detector} \label{sec:dinov3}
+
 \subsection{Motivation}
-Replace with your group's shared motivation.
-\subsection{Related Works}
-Replace with your group's shared related works.
-\subsection{Problem Definition}
-Replace with your group's shared problem definition.
+Prior CNN-based forensic detectors can over-rely on dataset- and generator-specific cues, which often leads to degraded performance under distribution shift (e.g., unseen generators or differing compression pipelines). To improve cross-dataset robustness, we utilize self-supervised DINOv3 Vision Transformer features, which inherently attend to generalizable structural features, and fine-tune a small subset of parameters. Our approach achieves 0.88 cross-dataset AUROC while fine-tuning only 8.3\% of the model's parameters.
 
-\section{Methodology}
+\subsection{Pipeline Overview}
+The pipeline operates in three stages: (1) face extraction via MTCNN~\cite{mtcnn} with vertical-shift cropping; (2) frame encoding through a DINOv3 ViT-B/16 backbone with LayerNorm tuning; and (3) classification via a linear probe augmented with angular-margin metric learning. Figure~\ref{fig:architecture} illustrates the full inference pipeline.
 
-\subsection{Visual Modality: DINOv3-Based Frame Detection}
+% Full-width pipeline diagram placed at top of page
+\begin{figure*}[!t]
+\centering
+\begin{tikzpicture}[
+  font=\sffamily\small,
+  node distance=0.5cm and 0.7cm,
+  box/.style={
+    rectangle, rounded corners=3pt,
+    draw=black!60, line width=0.8pt,
+    minimum height=1.0cm, minimum width=2.2cm,
+    inner sep=4pt, align=center, fill=white
+  },
+  backbone/.style={
+    box, fill=blue!6, draw=blue!50, line width=1pt,
+    minimum width=3.0cm
+  },
+  outbox/.style={
+    box, fill=green!5, draw=black!50, minimum width=2.0cm
+  },
+  arrow/.style={-Stealth, line width=1.2pt, black!55},
+  grp/.style={
+    rectangle, rounded corners=5pt,
+    draw=black!25, line width=0.8pt,
+    fill=black!3, inner sep=10pt
+  },
+  lbl/.style={font=\sffamily\scriptsize\bfseries, text=black!50}
+]
 
-The visual modality of DeepfakeGuard addresses the cross-dataset
-generalization gap that plagues CNN-based detectors. Approaches
-such as Xception \cite{rossler2019faceforensics} and EfficientNet
-\cite{efficientnet} achieve strong in-distribution performance on
-FaceForensics++ but suffer notable AUROC degradation on unseen
-datasets such as Celeb-DF \cite{celebdf}. We instead leverage a
-self-supervised DINOv3 ViT-B/16 encoder \cite{oquab2023dinov2},
-whose self-distillation pre-training encourages global structural
-representations rather than generator-specific texture shortcuts,
-a property that naturally supports cross-dataset generalization.
-Algorithm~\ref{alg:training} summarizes the full training procedure.
+% ---- Preprocessing nodes (left to right) ----
+\node[box] (vid)  {Input\\Video};
+\node[box, right=of vid]  (samp) {Sample\\16 Frames};
+\node[box, right=of samp] (det)  {MTCNN\\Detect};
+\node[box, right=of det]  (crop) {Crop \&\\Align};
+\node[box, right=of crop] (pre)  {$224{\times}224$\\{\scriptsize JPEG aug.}};
 
-\begin{algorithm}[H]
-\caption{Visual Modality Training}
-\label{alg:training}
+% ---- Backbone ----
+\node[backbone, right=1.0cm of pre] (vit) {DINOv3\\ViT-B/16\\{\scriptsize\itshape LN + last block}};
+
+% ---- Classifier nodes ----
+\node[box, right=1.0cm of vit]  (l2)   {$\ell_2$-Norm};
+\node[box, right=of l2]         (head) {Linear\\+ Softmax};
+\node[outbox, right=of head]    (out)  {$P(\text{fake})$};
+
+% ---- Group boxes ----
+\begin{scope}[on background layer]
+  \node[grp, fit=(vid)(samp)(det)(crop)(pre),
+        label={[lbl]above:Preprocessing}] {};
+  \node[grp, fit=(vit),
+        label={[lbl]above:Backbone}] {};
+  \node[grp, fit=(l2)(head)(out),
+        label={[lbl]above:Classifier}] {};
+\end{scope}
+
+% ---- Arrows (Explicitly anchored East-to-West to avoid text overlap) ----
+\draw[arrow] (vid.east)  -- (samp.west);
+\draw[arrow] (samp.east) -- (det.west);
+\draw[arrow] (det.east)  -- (crop.west);
+\draw[arrow] (crop.east) -- (pre.west);
+\draw[arrow] (pre.east)  -- (vit.west);
+\draw[arrow] (vit.east)  -- (l2.west);
+\draw[arrow] (l2.east)   -- (head.west);
+\draw[arrow] (head.east) -- (out.west);
+
+\end{tikzpicture}
+\caption{DINOv3 visual detection pipeline. Frames are uniformly sampled from input video, faces are aligned and JPEG-simulated, then encoded by a partially fine-tuned DINOv3 backbone and classified as real or fake.}
+\label{fig:architecture}
+\end{figure*}
+
+Algorithm~\ref{alg:training} summarizes the training procedure.
+
+% Algorithm float changed to top [!t]
+\begin{algorithm}[!t]
+\caption{DINOv3 Detector Training}\label{alg:training}
 \begin{algorithmic}[1]
-\Require DINOv3 ViT-B/16 encoder $\phi$, linear head $h$,
-         paired dataset $\mathcal{D}$
+\Require DINOv3 ViT-B/16 encoder $\phi$, linear head $h$, paired dataset $\mathcal{D}$
 \State Freeze all parameters of $\phi$
 \State Unfreeze LayerNorm $(\gamma, \beta)$ in all transformer blocks
 \State Unfreeze all parameters of the last transformer block
 \For{epoch $= 1$ \textbf{to} $20$}
-  \For{each batch $\{(x^{(i)}_r, x^{(i)}_f)\}_{i=1}^{B}$}
-    \State $X \leftarrow \text{concat}([x^{(1)}_r, \ldots,
-           x^{(B)}_r, x^{(1)}_f, \ldots, x^{(B)}_f])$
-    \State $\mathbf{y} \leftarrow
-           [\underbrace{0, \ldots, 0}_{B},
-            \underbrace{1, \ldots, 1}_{B}]$
-           \Comment{Real=0, Fake=1}
-    \State $\mathbf{e} \leftarrow \ell_2\text{-norm}(\phi(X))$
-           \Comment{L2-normalized embeddings}
-    \State $\hat{\mathbf{y}} \leftarrow h(\mathbf{e})$
-           \Comment{Logits}
-    \State $\mathcal{L} \leftarrow \mathcal{L}_{\text{CE}}
-           (\hat{\mathbf{y}}, \mathbf{y}) + \lambda \cdot
-           \mathcal{L}_{\text{metric}}(\mathbf{e}, \mathbf{y})$
-    \State Update $\theta$ via AdamW with mixed-precision scaling
-  \EndFor
-  \State Step cosine-annealing scheduler
-  \State Evaluate on Celeb-DF; save best checkpoint by AUROC
+    \For{each batch $\{(\mathbf{x}_r^{(i)}, \mathbf{x}_f^{(i)})\}_{i=1}^{B}$}
+        \State $\mathbf{X} \gets \text{concat}([\mathbf{x}_r^{(1)}, \dots, \mathbf{x}_r^{(B)}, \mathbf{x}_f^{(1)}, \dots, \mathbf{x}_f^{(B)}])$
+        \State $\mathbf{y} \gets [\underbrace{0,\dots,0}_{B},\, \underbrace{1,\dots,1}_{B}]$
+        \State $\mathbf{e} \gets \ell_2\text{-norm}(\phi(\mathbf{X}))$
+        \State $\hat{\mathbf{y}} \gets h(\mathbf{e})$
+        \State $\mathcal{L} \gets \mathcal{L}_{\text{CE}} + \lambda\cdot\frac{1}{|\mathcal{P}|}\sum_{(i,j)\in\mathcal{P}}\max(0,\cos(\mathbf{e}_i,\mathbf{e}_j)+m)$
+        \State Update $\theta$ via AdamW with mixed-precision
+    \EndFor
 \EndFor
 \end{algorithmic}
 \end{algorithm}
 
-\subsubsection{Data Pipeline}
+\subsection{Data Pipeline}
 
-\textit{Training data.} FaceForensics++ (FF++)
-\cite{rossler2019faceforensics} is used exclusively for training,
-employing all five manipulation methods --- Deepfakes, Face2Face,
-FaceSwap, NeuralTextures, and FaceShifter \cite{faceshifter} ---
-at c23 compression quality. The entire FF++ corpus is used for
-training since evaluation is conducted on a wholly disjoint dataset.
+\noindent\textbf{Training set.} FaceForensics++ (FF++)~\cite{rossler2019faceforensics} is used exclusively for training, encompassing five manipulation methods at c23 (light) compression.
 
-\textit{Validation data.} Celeb-DF v2 \cite{celebdf} is used
-exclusively for cross-dataset evaluation. It contains celebrity
-face-swap videos generated by a different synthesis algorithm and
-with different subject demographics from FF++, ensuring reported
-metrics reflect true generalization rather than dataset-specific
-overfitting.
+\noindent\textbf{Cross-dataset evaluation set.} Celeb-DF v2~\cite{celebdf} is used exclusively for unseen evaluation, with no fine-tuning on Celeb-DF.
 
-\textit{Paired sampling.} Each batch of size $B{=}16$ yields
-16 real and 16 fake frames from the same source video, producing
-an effective batch of 32 images with perfect class balance. This
-paired design eliminates class-imbalance artifacts and ensures the
-metric loss always has informative cross-class pairs.
+\noindent\textbf{Paired sampling.} Each DataLoader batch yields 16 real and 16 fake frames from the same source video identity, producing an effective batch of 32 images with perfect class balance to reduce background shortcuts.
 
-\textit{Face preprocessing.} MTCNN \cite{zhang2016joint} detects
-faces with a confidence threshold of 0.95. A square crop is
-extracted with 30\% padding and a 10\% upward vertical shift to
-better expose lower-face synthesis artifacts such as jawline
-blending and chin inconsistencies. Crops are resized to
-$224 \times 224$ and ImageNet-normalized.
+\begin{figure}[!t]
+\centering
+\resizebox{0.95\columnwidth}{!}{%
+\begin{tikzpicture}[
+  font=\sffamily\small,
+  node distance=0.5cm and 1.3cm,
+  box/.style={
+    rectangle, rounded corners=3pt,
+    draw=black!60, line width=0.8pt,
+    minimum height=0.8cm, minimum width=2.6cm,
+    inner sep=4pt, align=center, fill=white
+  },
+  fakebox/.style={box, fill=red!4},
+  wide/.style={box, minimum width=6.0cm},
+  arrow/.style={-Stealth, line width=1.2pt, black!55},
+  line/.style={line width=1.2pt, black!55},
+  grp/.style={
+    rectangle, rounded corners=4pt,
+    draw=black!25, line width=0.8pt,
+    fill=black!3, inner sep=8pt
+  },
+  lbl/.style={font=\sffamily\scriptsize\bfseries, text=black!50}
+]
 
-\subsubsection{LayerNorm Tuning}
+% Source videos
+\node[box]     (rv) {Real Video};
+\node[fakebox, right=of rv] (fv) {Fake Video};
 
-The DINOv3 ViT-B/16 backbone produces 768-dimensional CLS-token
-embeddings. Rather than freezing all parameters (limiting
-adaptation) or full fine-tuning (risking catastrophic forgetting),
-we adopt a two-stage parameter-efficient strategy. LayerNorm
-\cite{layernorm} normalizes activations as:
+% Sampled frames
+\node[box,     below=of rv] (rf) {16 Real\\Frames};
+\node[fakebox, below=of fv] (ff) {16 Fake\\Frames};
 
+% Group boxes around source pairs
+\begin{scope}[on background layer]
+  \node[grp, fit=(rv)(rf),
+        label={[lbl]above:Real source (same identity)}] (g1) {};
+  \node[grp, fit=(fv)(ff),
+        label={[lbl]above:Fake source (manipulated)}] (g2) {};
+\end{scope}
+
+% Combined batch (Centered between the two groups)
+\node[wide, fill=blue!5, draw=blue!40, line width=0.8pt,
+      below=0.7cm of rf, xshift=2.0cm]
+  (batch) {Paired batch: $[\,r_1,\dots,r_{16},\;f_1,\dots,f_{16}\,]$\\
+           Labels: $[\,0,\dots,0,\;1,\dots,1\,]$};
+
+% Preprocessing
+\node[wide, fill=blue!5, draw=blue!40, line width=0.8pt,
+      below=0.45cm of batch]
+  (pp) {MTCNN detect \& align, $224{\times}224$ crops};
+
+% Output
+\node[wide, fill=black!5, draw=black!40, line width=0.8pt,
+      below=0.45cm of pp]
+  (out) {32 balanced face images};
+
+% Internal arrows
+\draw[arrow] (rv.south) -- (rf.north);
+\draw[arrow] (fv.south) -- (ff.north);
+
+% Perfectly straight routing from the frames down into the batch box
+\draw[line] (rf.south) -- +(0,-0.25) coordinate (j1);
+\draw[line] (ff.south) -- +(0,-0.25) coordinate (j2);
+\draw[line] (j1) -- (j2);
+\draw[arrow] ($(j1)!0.5!(j2)$) -- (batch.north);
+
+\draw[arrow] (batch.south) -- (pp.north);
+\draw[arrow] (pp.south)    -- (out.north);
+
+\end{tikzpicture}
+}
+\caption{Paired sampling strategy. Real and fake frames are drawn from the same source videos to eliminate background shortcuts, then preprocessed into 32 balanced face images per batch.}
+\label{fig:pipeline}
+\end{figure}
+
+\noindent\textbf{Face preprocessing.} MTCNN~\cite{mtcnn} detects faces (confidence $\ge 0.95$). A square crop is extracted with 30\% padding and a vertical upward shift of 10\% of the face height to better capture lower-face artifacts.
+
+\subsection{DINOv3 Encoder with LayerNorm Tuning}
+The backbone is a \textbf{DINOv3 ViT-B/16} encoder producing 768-dimensional embeddings. LayerNorm normalizes activations across the feature dimension:
 \begin{equation} \label{eq:layernorm}
-    \text{LN}(\mathbf{x}) = \frac{\mathbf{x} - \mu}
-    {\sqrt{\sigma^2 + \epsilon}} \cdot \gamma + \beta,
+    \text{LN}(\mathbf{x}) = \frac{\mathbf{x} - \mu}{\sqrt{\sigma^2 + \epsilon}} \cdot \gamma + \beta
 \end{equation}
+Our three-stage tuning strategy: (1) freeze all encoder parameters; (2) unfreeze LayerNorm $(\gamma, \beta)$ across all blocks (${\sim}$40K parameters, 0.04\% of 86M); (3) unfreeze the final transformer block (${\sim}$7.1M total, 8.3\%).
 
-where $\gamma$ and $\beta$ are learnable scale and shift parameters.
-We first unfreeze only LayerNorm $(\gamma, \beta)$ across all
-transformer blocks (${\sim}38$K parameters, 0.04\% of 86M total)
-to re-calibrate feature normalization statistics for the deepfake
-domain. We then additionally unfreeze the final transformer block
-(${\sim}7.1$M parameters, 8.3\% of total) to adapt high-level
-semantic representations. The encoder output is L2-normalized
-before the classification head:
-
-\begin{equation} \label{eq:l2norm}
-    \mathbf{e} = \frac{\phi(\mathbf{x})}{\|\phi(\mathbf{x})\|_2},
-\end{equation}
-
-placing all embeddings on the unit hypersphere, which is critical
-for the angular-margin loss in \eqref{eq:combined}.
-
-\subsubsection{Angular Margin Metric Learning}
-
-Standard cross-entropy loss does not explicitly enforce separation
-between real and fake clusters in embedding space. We augment
-training with an angular-margin contrastive loss over
-L2-normalized embeddings $\mathbf{e}_i$:
-
-\begin{equation} \label{eq:metric}
-    \mathcal{L}_{\text{metric}} = \frac{1}{N^2} \sum_{i=1}^{N}
-    \sum_{j=1}^{N} \mathbb{1}[y_i 
-eq y_j] \cdot
-    \text{ReLU}\!\left(\cos(\mathbf{e}_i, \mathbf{e}_j) + m\right),
-\end{equation}
-
-where $m = 0.6$ is the angular margin. This pushes real and fake
-representations at least $\cos^{-1}(-0.6) \approx 127^{\circ}$
-apart in angular space. The combined training objective is:
-
+\subsection{Classification Head and Metric Learning}
+A single linear layer $h: \mathbb{R}^{768} \to \mathbb{R}^{2}$ maps $\ell_2$-normalized embeddings $\mathbf{e}_i$ to class logits. We train with cross-entropy and add a batch-wise angular-separation regularizer over opposite-label pairs:
 \begin{equation} \label{eq:combined}
-    \mathcal{L} = \mathcal{L}_{\text{CE}} + \lambda \cdot
-    \mathcal{L}_{\text{metric}}, \quad \lambda = 0.5.
+    \mathcal{L} = \mathcal{L}_{\text{CE}} + \lambda \cdot \frac{1}{|\mathcal{P}|}\sum_{(i,j)\in\mathcal{P}}\max\big(0,\ \cos(\mathbf{e}_i, \mathbf{e}_j) + m\big)
 \end{equation}
+where $\mathcal{P}=\{(i,j): i<j,\ y_i \neq y_j\}$ indexes opposite-label pairs in a batch. We use $\lambda = 0.5$ and a cosine margin $m = 0.6$, forcing real and fake embeddings apart on the unit hypersphere.
 
-\subsubsection{Compression-Aware Training}
+\subsection{Compression-Aware Training}
+When users upload media to social platforms like Twitter or WhatsApp, the videos are heavily compressed, stripping away high-frequency data. To ensure our model does not overfit to pristine training data and fail on real-world degradation, we apply a stochastic augmentation pipeline during training:
+\begin{itemize}[leftmargin=*]
+    \item \textbf{JPEG compression}: $q \sim \mathcal{U}[50, 90]$, $p = 0.3$.
+    \item \textbf{Gaussian blur}: $\sigma \sim \mathcal{U}[0.1, 2.0]$, $p = 0.2$.
+    \item \textbf{Color and Geometric}: Jitter, horizontal flip ($p=0.5$), rotation ($\pm 15^\circ$).
+\end{itemize}
 
-Real-world video undergoes lossy compression absent from pristine
-training data. We apply a stochastic augmentation pipeline during
-training: JPEG compression at quality $q \sim \mathcal{U}[50, 90]$
-($p{=}0.3$), Gaussian blur with $\sigma \sim \mathcal{U}[0.1, 2.0]$
-($p{=}0.2$), color jitter (brightness, contrast, saturation
-$\pm 0.2$; hue $\pm 0.1$), random horizontal flip ($p{=}0.5$),
-and rotation ($\pm 15^{\circ}$). At inference, a deterministic
-JPEG simulation at quality 90 aligns the test distribution with
-the training augmentation range.
+\subsection{Experiments}
 
-\subsubsection{System Implementation}
+\textbf{Evaluation Protocol.} Models are trained purely on FF++ and evaluated on Celeb-DF v2. We report AUROC (primary) and accuracy.
 
-DeepfakeGuard's visual modality is implemented in PyTorch using
-the \texttt{timm} library for the DINOv3 backbone and
-\texttt{facenet-pytorch} for MTCNN face extraction. The
-end-to-end inference pipeline uniformly samples 8 frames from an
-uploaded video via OpenCV, extracts and crops faces, applies JPEG
-simulation, and passes batched frames through the encoder and
-linear head. Per-frame $P(\text{fake})$ probabilities are averaged
-to produce a video-level score. An optional identity-verification
-module uses a pre-trained InceptionResNet-V1 (VGGFace2) to compute
-cosine similarity between a reference photo and in-video faces as
-a secondary check for face-swap attacks. The full system is
-deployed as a Streamlit web application with core dependencies
-\texttt{torch}, \texttt{timm}, \texttt{facenet-pytorch}, and
-\texttt{streamlit}. The implementation is publicly available at
-\url{https://github.com/aryanbiswas16/DeepfakeVidDetection}.
-
-\section{Results}
-
-\subsection{Visual Modality Results}
-
-All experiments follow a strict cross-dataset protocol: trained
-on FF++ (five manipulation methods), evaluated on Celeb-DF, which
-shares no videos or manipulation algorithms with the training set.
-CNN baselines are trained under the same paired-sampling protocol,
-data splits, and augmentation pipeline for a fair comparison.
-
-\subsubsection{Cross-Dataset Performance}
-
-Table~\ref{tab:visual_results} presents results on Celeb-DF.
-Our DINOv3-based method achieves \textbf{0.88 AUROC} and
-\textbf{0.86 accuracy} at 8~ms/frame, outperforming Xception by
-7 AUROC points with faster inference and surpassing EfficientNet-B4
-by 4 AUROC points while running nearly $2\times$ faster.
-
-\begin{table}[H]
+\begin{table}[!t]
 \centering
-\caption{Cross-dataset deepfake detection on Celeb-DF. All methods
-trained on FF++ under identical protocols.}
-\label{tab:visual_results}
-\begin{tabular}{|l|c|c|c|}
-\hline
-\textbf{Method} & \textbf{Acc.} & \textbf{AUROC} & \textbf{ms/f} \\
-\hline
-ResNet-50                                & 0.68 & 0.76 & 8  \\ \hline
-Xception \cite{rossler2019faceforensics} & 0.72 & 0.81 & 12 \\ \hline
-EfficientNet-B4 \cite{efficientnet}      & 0.75 & 0.84 & 15 \\ \hline
-\textbf{DINOv3 (Ours)} & \textbf{0.86} & \textbf{0.88} & \textbf{8} \\ \hline
+\caption{Cross-dataset detection on Celeb-DF v2 (trained on FF++).}
+\label{tab:results}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Method} & \textbf{Acc.} & \textbf{AUROC} \\
+\midrule
+MesoInception4~\cite{afchar2018mesonet}      & ---  & 0.536 \\
+Xception-c23~\cite{rossler2019faceforensics} & ---  & 0.653 \\
+Face X-ray~\cite{li2020facexray}             & ---  & 0.741 \\
+\textbf{DINOv3 (Ours)}  & \textbf{0.780} & \textbf{0.880} \\
+\bottomrule
 \end{tabular}
 \end{table}
 
-\subsubsection{FaceForensics++ Benchmark Results}
+Our DINOv3 modality outperforms Xception-c23 by 23 AUROC points. Figure~\ref{fig:comparison} visualizes the comparison.
 
-To validate our method on a standard benchmark, we evaluated all
-detectors on the FaceForensics++ test set (10 original videos +
-9 Deepfake-manipulated videos at c23 compression). 
-Table~\ref{tab:ff_benchmark} presents the measured results.
-
-\begin{table}[H]
+\begin{figure}[!t]
 \centering
-\caption{Measured performance on FaceForensics++ test videos
-(19 videos total).}
-\label{tab:ff_benchmark}
-\begin{tabular}{|l|c|c|c|c|c|}
-\hline
-\textbf{Method} & \textbf{AUROC} & \textbf{Acc.} & \textbf{Prec.} & \textbf{Rec.} & \textbf{F1} \\
-\hline
-ResNet18 (baseline) & 0.4444 & 0.4737 & 0.4615 & 0.6667 & 0.5455 \\ \hline
-IvyFake (CLIP-based) & 0.5556 & 0.5789 & 0.5333 & 0.8889 & 0.6667 \\ \hline
-D3 (xclip-based) & 0.5111 & 0.5263 & 0.5000 & 0.4444 & 0.4706 \\ \hline
-\textbf{DINOv3 (Ours)} & \textbf{1.0000} & \textbf{1.0000} & \textbf{1.0000} & \textbf{1.0000} & \textbf{1.0000} \\ \hline
-\end{tabular}
-\end{table}
+\begin{tikzpicture}
+\begin{axis}[
+    ybar,
+    bar width=11pt,
+    width=\columnwidth,
+    height=5.0cm,
+    ylabel={AUROC},
+    ylabel style={font=\footnotesize},
+    symbolic x coords={MesoInception, Xception-c23, Face X-ray, DINOv3 (Ours)},
+    xtick=data,
+    xticklabel style={rotate=25, anchor=east, font=\scriptsize},
+    ymin=0.0, ymax=1.05,
+    ytick={0, 0.2, 0.4, 0.6, 0.8, 1.0},
+    yticklabel style={font=\scriptsize},
+    ymajorgrids=true,
+    grid style={dashed, black!12},
+    nodes near coords,
+    nodes near coords style={font=\scriptsize\bfseries, anchor=south, yshift=2pt},
+    axis lines*=left,
+    enlarge x limits=0.20,
+]
+\addplot[fill=black!18, draw=black!40] coordinates {
+    (MesoInception, 0.536)
+    (Xception-c23,  0.653)
+    (Face X-ray,    0.741)
+};
+\addplot[fill=blue!50, draw=blue!70] coordinates {
+    (DINOv3 (Ours), 0.880)
+};
+\end{axis}
+\end{tikzpicture}
+\caption{Cross-dataset AUROC on Celeb-DF v2. DINOv3 significantly outperforms prior baselines.}
+\label{fig:comparison}
+\end{figure}
 
-Our DINOv3 detector achieved \textbf{perfect detection} (AUROC 1.0,
-Accuracy 1.0) on the FaceForensics++ test set, demonstrating
-effective separation between real and manipulated videos. The
-other detectors (ResNet18, IvyFake, D3) without specific training
-on deepfake data show near-random performance as expected.
+Table~\ref{tab:ablation} details the ablation study, demonstrating that our approach achieves superior generalization with far fewer tuned parameters than previous CNN baselines.
 
-\subsubsection{Ablation Study}
-
-Table~\ref{tab:ablation} quantifies the incremental contribution
-of each design choice. LayerNorm tuning provides the single
-largest per-parameter gain ($+0.03$ AUROC from only ${\sim}38$K
-parameters), confirming that re-calibrating normalization
-statistics is a highly efficient form of domain adaptation.
-Last-block unfreezing adds $+0.02$ AUROC, and metric learning
-contributes a further $+0.01$ with no additional parameters.
-Notably, LayerNorm-only tuning already outperforms all CNN
-baselines at 0.85 AUROC. Removing JPEG augmentation causes a
-$-0.05$ AUROC drop on Celeb-DF (0.83 vs.\ 0.88), validating
-the compression-aware strategy.
-
-\begin{table}[H]
+\begin{table}[!t]
 \centering
-\caption{Ablation on Celeb-DF. Each row adds one component to
-the configuration above it.}
+\caption{Ablation on Celeb-DF v2: each row adds one component.}
 \label{tab:ablation}
-\begin{tabular}{|l|c|c|}
-\hline
-\textbf{Configuration} & \textbf{AUROC} & \textbf{Params} \\ \hline
-Frozen DINOv3 + linear head       & 0.82                          & ${\sim}$1.5K \\ \hline
-+ LayerNorm tuning                 & 0.85 ($\Delta$+0.03)          & ${\sim}$40K  \\ \hline
-+ Last-block unfreezing            & 0.87 ($\Delta$+0.02)          & ${\sim}$7.1M \\ \hline
-+ Metric learning ($\lambda$=0.5) & \textbf{0.88} ($\Delta$+0.01) & ${\sim}$7.1M \\ \hline
+\begin{tabular}{lcc}
+\toprule
+\textbf{Configuration} & \textbf{AUROC} & \textbf{Trainable} \\
+\midrule
+Frozen DINOv3 + linear head         & 0.810 & ${\sim}$1.5K \\
+\quad + LayerNorm tuning            & 0.845 & ${\sim}$40K  \\
+\quad + Last-block unfreezing       & 0.865 & ${\sim}$7.1M \\
+\quad + Metric learning ($\lambda\!=\!0.5$) & \textbf{0.880} & ${\sim}$7.1M \\
+\bottomrule
 \end{tabular}
 \end{table}
 
-\section{Conclusion}
-Replace with your group's shared conclusion.
+\FloatBarrier
 
-\section*{Acknowledgements}
-The authors thank Queen's University's School of Computing for
-supporting this research.
+% ================================================================
+%  AUDIO & TEMPORAL SECTIONS (PLACEHOLDERS)
+% ================================================================
 
-\newpage
-\bibliographystyle{IEEEtran}
-\bibliography{references}
+\section{LipFD Audio-Visual Detector} \label{sec:lipfd}
+
+\subsection{Motivation}
+Face-swap and lip-sync deepfakes can produce visually convincing results that fool frame-level detectors, yet they often fail to preserve the precise temporal alignment between speech audio and lip articulation. The LipFD detector~\cite{lipfd2024} (\emph{Lips Are Lying}, NeurIPS 2024) exploits this weakness: by jointly analysing mel-spectrogram audio features and multi-scale lip crops, it detects temporal inconsistencies that are imperceptible to human observers but measurable by a learned audio-visual model.
+
+\subsection{Architecture}
+LipFD combines two complementary feature streams:
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{Global audio-visual stream.} A frozen CLIP ViT-L/14 encoder processes a composite image — a mel-spectrogram (500${\times}$2500\,px) stacked above five consecutive 500${\times}$500\,px video frames — to produce a 768-dimensional global feature vector that captures coarse audio-visual correspondence.
+    \item \textbf{Region-awareness stream.} A ResNet-50 backbone independently encodes three progressively zoomed centre crops (1.0${\times}$, 0.65${\times}$, 0.45${\times}$) of each video frame, yielding 2048-d regional features.  Each regional feature is concatenated with the CLIP global vector, and a learned sigmoid gate assigns an attention weight per scale.  The weighted combination is averaged across the five frames to produce a single fused representation.
+\end{enumerate}
+A linear head maps the fused representation to a binary logit, trained with cross-entropy and a \emph{Region-Awareness (RA) loss} that encourages the model to concentrate attention on the most discriminative spatial scale (typically the 0.45${\times}$ lip crop).
+
+\subsection{Preprocessing}
+Each video is decoded and uniformly sampled into groups of five consecutive frames.  Audio is extracted via FFmpeg and converted to a mel-spectrogram using librosa.  A composite image is built per group by horizontally concatenating the five resized frames (500${\times}$500) below the corresponding mel-spectrogram slice (500${\times}$2500), producing a 1000${\times}$2500 image.  This composite is then resized to 1120${\times}$1120 for the CLIP encoder, and the frame region is separately cropped at three scales for the ResNet backbone.  Figure~\ref{fig:lipfd_arch} illustrates the full pipeline.
+
+\begin{figure}[!t]
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}[
+  font=\sffamily\small,
+  node distance=0.4cm and 0.8cm,
+  box/.style={
+    rectangle, rounded corners=3pt,
+    draw=black!60, line width=0.8pt,
+    minimum height=0.8cm, minimum width=2.4cm,
+    inner sep=4pt, align=center, fill=white
+  },
+  wide/.style={box, minimum width=4.5cm},
+  backbone/.style={box, fill=blue!6, draw=blue!50, line width=1pt},
+  outbox/.style={box, fill=green!5, draw=black!50},
+  arrow/.style={-Stealth, line width=1.2pt, black!55},
+  grp/.style={
+    rectangle, rounded corners=4pt,
+    draw=black!25, line width=0.8pt,
+    fill=black!3, inner sep=8pt
+  },
+  lbl/.style={font=\sffamily\scriptsize\bfseries, text=black!50}
+]
+
+% Input
+\node[box] (vid)  {Input Video};
+\node[box, right=of vid] (ext) {Extract Frames\\+ Audio};
+\node[box, right=of ext] (comp) {Build Composite\\{\scriptsize mel + 5 frames}};
+
+% Two streams
+\node[backbone, below left=0.8cm and -0.3cm of comp] (clip) {CLIP ViT-L/14\\{\scriptsize 768-d global}};
+\node[backbone, below right=0.8cm and -0.3cm of comp] (resnet) {ResNet-50\\{\scriptsize 3-scale crops}};
+
+% Fusion
+\node[wide, below=1.0cm of comp, yshift=-1.0cm] (fuse) {Attention-Weighted Fusion\\{\scriptsize concat + sigmoid gate}};
+\node[outbox, below=0.5cm of fuse] (out) {$P(\text{fake})$};
+
+% Arrows
+\draw[arrow] (vid.east) -- (ext.west);
+\draw[arrow] (ext.east) -- (comp.west);
+\draw[arrow] (comp.south) -| (clip.north);
+\draw[arrow] (comp.south) -| (resnet.north);
+\draw[arrow] (clip.south) |- (fuse.west);
+\draw[arrow] (resnet.south) |- (fuse.east);
+\draw[arrow] (fuse.south) -- (out.north);
+
+\end{tikzpicture}
+}
+\caption{LipFD audio-visual detection pipeline.  A composite image (mel-spectrogram + video frames) is processed by a frozen CLIP encoder and a region-aware ResNet-50, then fused via attention-weighted combination.}
+\label{fig:lipfd_arch}
+\end{figure}
+
+\subsection{Training and Dataset}
+LipFD is trained on the AVLips dataset, which pairs real talking-head videos with lip-synced deepfakes generated by state-of-the-art lip-sync methods.  The model is optimised with cross-entropy loss augmented by RA loss:
+\begin{equation}
+    \mathcal{L}_{\text{RA}} = \frac{1}{B}\sum_{b=1}^{B}\sum_{i=1}^{F} \frac{10}{\exp\bigl(\alpha_{\max}^{(b,i)} - \alpha_{0}^{(b,i)}\bigr)}
+\end{equation}
+where $\alpha_{\max}^{(b,i)}$ is the maximum attention weight across scales for frame $i$ of sample $b$, and $\alpha_{0}^{(b,i)}$ is the full-frame (1.0${\times}$) weight.  This loss encourages the model to assign higher attention to the most informative crop (lip region) rather than distributing attention uniformly.
+
+\subsection{Implementation}
+Our integration wraps the pretrained LipFD checkpoint (CLIP:ViT-L/14 variant, trained on AVLips) as a drop-in detector backend.  Table~\ref{tab:lipfd_stack} summarises the stack.
+
+\begin{table}[!t]
+\centering
+\caption{LipFD implementation stack.}
+\label{tab:lipfd_stack}
+\begin{tabular}{ll}
+\toprule
+Component & Tool \\
+\midrule
+Global encoder   & OpenAI CLIP ViT-L/14 (frozen) \\
+Region backbone  & ResNet-50 (fine-tuned) \\
+Audio features   & librosa mel-spectrogram \\
+Video decoding   & OpenCV, FFmpeg \\
+Backend          & PyTorch 2.x \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent At inference, 10 composite images are uniformly sampled from the video and processed in mini-batches of 4.  Per-sample sigmoid probabilities are averaged to produce a final score; videos scoring ${\geq}0.5$ are labelled FAKE.
+
+% ================================================================
+% D3 TRAINING-FREE TEMPORAL DETECTOR
+% ================================================================
+
+\section{D3 Training-Free Temporal Detector} \label{sec:d3}
+
+\subsection{Motivation}
+Supervised deepfake detectors require labeled AI-generated data for every new generator, limiting their scalability and real-world applicability~\cite{zheng2025d3}. The D3 (Detection by Difference of Differences) method addresses this by exploiting a physics-grounded invariant: real-world videos exhibit complex, \emph{chaotic} second-order acceleration patterns governed by Newtonian mechanics, whereas AI-generated videos produced by diffusion and autoregressive generators display anomalously smooth, constrained motion due to the smoothness priors of their training distributions. Because this property can be measured using any pre-trained vision encoder without fine-tuning, D3 generalizes to unseen generators and requires no AI-generated training data whatsoever.
+
+The D3 framework approximates these physical dynamics using second-order central difference approximations to measure the volatility of semantic motion:
+\begin{align}
+    f''(x) &= \frac{f(x+h) - 2f(x) + f(x-h)}{h^2} \\
+           &= \frac{f'(x) - f'(x-h)}{h}
+\end{align}
+By calculating these numerical derivatives across frame embeddings, D3 identifies the "suppressed" motion signatures typical of current AI generators.
+
+\subsection{Pipeline Overview}
+Given a video $X \in \mathbb{R}^{T \times 3 \times H \times W}$ uniformly sampled into $T = 16$ frames at interval $\Delta t$, D3 applies a four-stage feature extraction pipeline progressing from zero-order position features to second-order acceleration and a final scalar volatility score, as illustrated in Figure~\ref{fig:d3flow}.
+
+\begin{figure}[!t]
+    \centering
+    \includegraphics[width=\columnwidth]{flow2.png}
+    \caption{D3 feature extraction pipeline. Real videos exhibit volatile second-order optical flow patterns (left); AI-generated videos show suppressed, constrained dynamics (right). Source:~\cite{zheng2025d3}.}
+    \label{fig:d3flow}
+\end{figure}
+
+\subsection{Feature Extraction and Volatility Computation}
+
+The D3 pipeline quantifies motion dynamics through a hierarchical extraction process. First, Zero-Order Features are captured by passing individual video frames through an xCLIP-B/16 encoder to obtain high-dimensional semantic embeddings that represent the "position" of objects in feature space. From these, First-Order Features are derived by calculating the rate of change between consecutive frame embeddings, effectively measuring the "velocity" of semantic shifts over time. 
+
+To capture the underlying physics, the system then computes Second-Order Features, which represent the "acceleration" or change in velocity between frames. Finally, the Volatility score is determined by measuring the statistical variance (standard deviation) of these acceleration features. This final scalar value identifies the "chaos" of the motion; real videos typically yield high volatility due to natural physical complexity, while AI-generated videos yield low volatility due to artificial motion smoothing.
+
+\subsection{Classification}
+Videos are classified by comparing the volatility score against a threshold $\tau$ calibrated on real-video validation data only (no AI-generated labels required):
+\begin{equation}
+    \text{label} = \begin{cases} \text{Real} & \text{if } \sigma(F_2) > \tau \\ \text{Fake} & \text{if } \sigma(F_2) \leq \tau \end{cases}
+\end{equation}
+Threshold $\tau$ is selected to maximize F1 on a held-out set of real videos, using scikit-learn PR-curve analysis.
+
+\subsection{Implementation}
+The D3 modality is implemented entirely in Python with no training loop. Table~\ref{tab:d3stack} summarizes the implementation stack.
+
+\begin{table}[!t]
+\centering
+\caption{D3 implementation stack.}
+\label{tab:d3stack}
+\begin{tabular}{ll}
+\toprule
+Component & Tool \\
+\midrule
+Vision encoder     & xCLIP-B/16 (HuggingFace Transformers) \\
+Backend            & PyTorch 2.x \\
+Video decoding     & OpenCV, torchvision \\
+Feature math       & NumPy, SciPy \\
+Threshold tuning   & scikit-learn (PR-curve) \\
+Web interface      & Gradio \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent Videos are decoded and uniformly sampled to $T{=}16$ frames. xCLIP embeddings are extracted per-frame and passed through the $F_0 \to F_1 \to F_2 \to \sigma$ pipeline. The full inference path requires no GPU fine-tuning and runs on CPU for short clips.
+
+\subsection{Experiments}
+
+Evaluation Protocol. We evaluate on real videos drawn from Kinetics-400 paired against AI-generated videos from Pika and Sora. We report Average Precision (AP) as the primary metric.
+
+\begin{table}[!t]
+\centering
+\caption{D3 detection performance by generator.}
+\label{tab:d3results}
+\begin{tabular}{lcc}
+\toprule
+Generator & Avg.\ Volatility $\sigma$ & AP \\
+\midrule
+Pika  & 1.42 & 89.76\% \\
+Sora  & 6.81 & $\approx$60--70\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+D3 achieves 89.76\% AP on Pika-generated videos. The substantially lower AP on Sora reflects that Sora's higher average volatility score (6.81 vs.\ 1.42) indicates superior physics simulation—making its outputs harder to distinguish from real videos. This confirms a dual insight: D3 is an effective detector for current generators and simultaneously serves as a physics-fidelity benchmark, with lower AP implying more realistic motion dynamics.
+
+Figure~\ref{fig:d3heatmap} shows xCLIP attention aligned with second-order flow variance, confirming that volatility concentrates around semantically meaningful moving objects consistent with Newtonian inertia.
+
+\begin{figure}[!t]
+    \centering
+    \includegraphics[width=0.7\columnwidth]{rebuttal_heatmap4.png}
+    \caption{xCLIP attention heatmap aligned with second-order flow variance, confirming physics-consistent localization on moving semantics. Source:~\cite{zheng2025d3}.}
+    \label{fig:d3heatmap}
+\end{figure}
+
+\FloatBarrier
+% ================================================================
+%  ETHICS DISCUSSION
+% ================================================================
+
+\section{Ethical Considerations} \label{sec:ethics}
+
+\subsection{Asymmetries and Justice}
+The current generative-AI ecosystem exhibits a deep asymmetry: offensive tools (deepfake generators) receive vastly more investment, user adoption, and open-source community support than their defensive counterparts (deepfake detectors). Consumer face-swap applications and voice-cloning services have been downloaded or accessed by millions of users~\cite{sensity2024}, while the most widely cited detection papers typically ship as fragile research code with little support for real-world integration.
+
+This imbalance has concrete justice implications: the people most exposed to deepfake harms (women targeted by non-consensual sexual imagery, activists in repressive regimes, low-level employees in financial institutions) are the least likely to have access to specialized forensic expertise. DeepfakeGuard is an explicit attempt to reduce this asymmetry. We caution against treating any automated detector as a complete solution or as a substitute for institutional responsibility.
+
+\subsection{Dual-Use and Model Probing}
+Any detection system can be used adversarially, for example by allowing attackers to iteratively refine deepfakes until they evade the detector. We accept this risk as inherent to security research: making detection methods openly available raises the floor for defenders, whereas obscurity primarily benefits well-resourced attackers. To mitigate dual-use risks in practice, we recommend that deployers: (1) avoid exposing raw model confidences to untrusted users; (2) rate-limit and log queries to detection APIs; and (3) combine model outputs with independent verification steps such as provenance checks and human review.
+
+\subsection{Bias, Coverage, and Contestability}
+Our DINOv3 modality is trained on FaceForensics++ and evaluated on Celeb-DF v2, datasets that over-represent Western, lighter-skinned celebrities~\cite{rossler2019faceforensics,celebdf}. The LipFD modality is trained on AVLips, which primarily contains English-language talking-head videos; its accuracy on other languages, accents, or non-frontal poses has not been systematically evaluated. Before deploying DeepfakeGuard in high-stakes environments, institutions should conduct local evaluations on demographically representative data and implement appeal or override mechanisms.
+
+\subsection{Limitations and Future Work}
+DeepfakeGuard does not address the truthfulness of verbal claims, the presence of coercion in otherwise real media, or the psychological harms inflicted on victims of synthetic imagery. Future research should explore tighter integration between detection and provenance tools, systematic audits across languages and demographics, and participatory design with the communities most affected by deepfakes.
+
+% ================================================================
+%  CONCLUSION
+% ================================================================
+
+\section{Conclusion} \label{sec:conclusion}
+
+We have presented DeepfakeGuard, an open-source multi-modal toolkit that unifies visual, audio-visual, and temporal deepfake detection into a single pip-installable Python library. By packaging a fine-tuned DINOv3 visual detector (0.88 AUROC cross-dataset), a LipFD audio-visual lip-sync detector, and a training-free D3 temporal detector behind a consistent API, DeepfakeGuard lowers the barrier to deploying deepfake defenses from bespoke research pipelines to a three-line function call. As generative AI continues to advance, we believe that open, accessible, and multi-modal detection tooling is not merely useful but ethically necessary. The toolkit is publicly available at \url{https://github.com/aryanbiswas16/DeepFakeGuard}.
+
+\section*{Author Contributions}
+A.~Biswas conceived the project, designed the overall system architecture, implemented the DINOv3 visual detector, and led the writing of this paper. [LipFD Author] integrated the LipFD audio-visual detector (Section~\ref{sec:lipfd}). [D3 Author] designed and implemented the D3 temporal detector (Section~\ref{sec:d3}).
+
+\section*{Acknowledgment}
+The authors thank Queen's University's School of Computing for supporting this research.
+
+% ================================================================
+%  REFERENCES
+% ================================================================
+
+\begin{thebibliography}{00}
+
+\bibitem{ai_safety_report}
+UK AI Safety Institute, ``International {AI} Safety Report,'' 2025.
+\newblock [Online]. Available: \url{https://www.gov.uk/government/publications/international-ai-safety-report}
+
+\bibitem{sensity2024}
+Sensity AI, ``The State of Deepfakes: 2024 Landscape,'' Tech. Rep., 2024.
+
+\bibitem{cnn2024arup}
+H.~Chen and K.~Magramo, ``Finance worker pays out \$25 million after video call with deepfake `chief financial officer,'\,'' CNN, Feb. 2024.
+
+\bibitem{valle}
+C.~Wang, S.~Chen, Y.~Wu, Z.~Zhang, L.~Zhou, S.~Liu, Z.~Chen, Y.~Liu, H.~Wang, J.~Li, L.~He, S.~Zhao, and F.~Wei, ``Neural codec language models are zero-shot text to speech synthesizers,'' \emph{arXiv preprint arXiv:2301.02111}, 2023.
+
+\bibitem{deepfacelab}
+I.~Perov, D.~Gao, N.~Chervoniy, K.~Liu, S.~Marangonda, C.~Um\'{e}, Mr.~Dpfks, C.~S.~Facez, L.~RP, J.~Jiang, S.~Zhang, P.~Wu, B.~Zhou, and W.~Zhang, ``{DeepFaceLab}: Integrated, flexible and extensible face-swapping framework,'' \emph{arXiv preprint arXiv:2005.05535}, 2020.
+
+\bibitem{thies2016face2face}
+J.~Thies, M.~Zollh\"{o}fer, M.~Stamminger, C.~Theobalt, and M.~Nie{\ss}ner, ``{Face2Face}: Real-time face capture and reenactment of {RGB} videos,'' in \emph{Proc. IEEE/CVF Conf. Comput. Vision Pattern Recognit. (CVPR)}, 2016, pp.~2387--2395.
+
+\bibitem{face_artifacts}
+Y.~Li and S.~Lyu, ``Exposing {DeepFake} videos by detecting face warping artifacts,'' in \emph{Proc. IEEE/CVF Conf. Comput. Vision Pattern Recognit. Workshops (CVPRW)}, 2019.
+
+\bibitem{temporal_detection}
+D.~G\"{u}era and E.~J.~Delp, ``Deepfake video detection using recurrent neural networks,'' in \emph{Proc. IEEE Int. Conf. Adv. Video Signal-Based Surveillance (AVSS)}, 2018, pp.~1--6.
+
+\bibitem{biological_signals}
+U.~A.~Ciftci, I.~Demir, and L.~Yin, ``{FakeCatcher}: Detection of synthetic portrait videos using biological signals,'' \emph{IEEE Trans. Pattern Anal. Mach. Intell.}, vol.~42, no.~11, pp.~2726--2740, 2020.
+
+\bibitem{rossler2019faceforensics}
+A.~R\"{o}ssler, D.~Cozzolino, L.~Verdoliva, C.~Riess, J.~Thies, and M.~Nie{\ss}ner, ``{FaceForensics++}: Learning to detect manipulated facial images,'' in \emph{Proc. IEEE/CVF Int. Conf. Comput. Vision (ICCV)}, 2019, pp.~1--11.
+
+\bibitem{efficientnet}
+M.~Tan and Q.~V.~Le, ``{EfficientNet}: Rethinking model scaling for convolutional neural networks,'' in \emph{Proc. Int. Conf. Mach. Learn. (ICML)}, 2019, pp.~6105--6114.
+
+\bibitem{celebdf}
+Y.~Li, X.~Yang, P.~Sun, H.~Qi, and S.~Lyu, ``{Celeb-DF}: A large-scale challenging dataset for {DeepFake} forensics,'' in \emph{Proc. IEEE/CVF Conf. Comput. Vision Pattern Recognit. (CVPR)}, 2020, pp.~3207--3216.
+
+\bibitem{oquab2024dinov3}
+M.~Oquab, T.~Darcet, T.~Moutakanni, H.~V.~Vo, M.~Szafraniec, V.~Khalidov, P.~Fernandez, D.~Haziza, F.~Massa, A.~El-Nouby, M.~Assran, N.~Ballas, W.~Galuba, R.~Howes, P.-Y.~Huang, S.-W.~Li, I.~Misra, M.~Rabbat, V.~Sharma, G.~Synnaeve, H.~Xu, H.~J\'{e}gou, J.~Mairal, P.~Labatut, A.~Joulin, and P.~Bojanowski, ``{DINOv2}: Learning robust visual features without supervision,'' \emph{Trans. Mach. Learn. Res. (TMLR)}, 2024.
+
+\bibitem{rethinking_forgery}
+R.~Shao, T.~Wu, and Z.~Liu, ``Detecting and grounding multi-modal media manipulation,'' in \emph{Proc. IEEE/CVF Conf. Comput. Vision Pattern Recognit. (CVPR)}, 2023.
+
+\bibitem{lipfd2024}
+W.~Liu, J.~Lin, B.~Li, S.~Peng, J.~Fang, and Z.~He, ``Lips are lying: Spotting the temporal inconsistency between audio and visual in lip-syncing deepfakes,'' in \emph{Advances Neural Inf. Process. Syst. (NeurIPS)}, 2024.
+
+\bibitem{zheng2025d3}
+K.~Zheng, H.~Kang, and H.~Zou, ``{D3}: Scaling up deepfake detection by learning from discrepancy,'' in \emph{Proc. IEEE/CVF Int. Conf. Comput. Vision (ICCV)}, 2025.
+
+\bibitem{mtcnn}
+K.~Zhang, Z.~Zhang, Z.~Li, and Y.~Qiao, ``Joint face detection and alignment using multitask cascaded convolutional networks,'' \emph{IEEE Signal Process. Lett.}, vol.~23, no.~10, pp.~1499--1503, 2016.
+
+\bibitem{li2020facexray}
+L.~Li, J.~Bao, T.~Zhang, H.~Yang, D.~Chen, F.~Wen, and B.~Guo, ``Face {X-Ray} for more general face forgery detection,'' in \emph{Proc. IEEE/CVF Conf. Comput. Vision Pattern Recognit. (CVPR)}, 2020, pp.~5001--5010.
+
+\bibitem{afchar2018mesonet}
+D.~Afchar, V.~Nozick, J.~Yamagishi, and I.~Echizen, ``{MesoNet}: A compact facial video forgery detection network,'' in \emph{Proc. IEEE Int. Workshop Inf. Forensics Security (WIFS)}, 2018, pp.~1--7.
+
+\end{thebibliography}
 
 \end{document}

@@ -14,13 +14,14 @@ The composite image layout matches the original LipFD training format
     │ 500×500│ 500×500│ 500×500│ 500×500│ 500×500     │
     └──────────────────────────────────────────────────┘
 
-Dependencies: opencv-python, librosa, numpy, torch, torchvision, matplotlib
+Dependencies: opencv-python, librosa, numpy, torch, torchvision
 Optional:     ffmpeg on PATH (for audio extraction from video)
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import tempfile
 import warnings
@@ -38,15 +39,6 @@ try:
 except ImportError:
     librosa = None  # type: ignore[assignment]
     audio_feat = None
-
-try:
-    import matplotlib
-
-    matplotlib.use("Agg")  # non-interactive backend
-    import matplotlib.pyplot as plt
-except ImportError:
-    plt = None  # type: ignore[assignment]
-
 
 # ---------------------------------------------------------------------------
 # Constants (matching original LipFD preprocessing)
@@ -66,6 +58,16 @@ CLIP_STD = [0.26862954, 0.26130258, 0.27577711]
 # crops[1]: 0.65× (center)    → [28:196, 28:196]
 # crops[2]: 0.45× (center)    → [61:163, 61:163]
 CROP_INDICES = [(28, 196), (61, 163)]
+
+
+def has_librosa_support() -> bool:
+    """Return True if librosa is available for mel-spectrogram generation."""
+    return librosa is not None and audio_feat is not None
+
+
+def has_ffmpeg_support() -> bool:
+    """Return True if ffmpeg binary is available on PATH."""
+    return shutil.which("ffmpeg") is not None
 
 
 # ---------------------------------------------------------------------------
@@ -107,12 +109,12 @@ def generate_mel_spectrogram(
     """
     Generate a mel-spectrogram image (H×W×3, uint8) from a WAV file.
 
-    Returns None if librosa/matplotlib are unavailable or audio is too short.
+    Returns None if librosa is unavailable or audio is too short.
     """
-    if librosa is None or plt is None:
+    if not has_librosa_support():
         warnings.warn(
-            "librosa and matplotlib are required for audio processing. "
-            "Install them with: pip install librosa matplotlib"
+            "librosa is required for audio processing. "
+            "Install it with: pip install librosa"
         )
         return None
 
@@ -123,19 +125,19 @@ def generate_mel_spectrogram(
 
         mel = librosa.power_to_db(
             audio_feat.melspectrogram(y=data, sr=sample_rate),
-            ref=np.min,
+            ref=np.max,
         )
 
-        # Render to image via matplotlib (matches original LipFD)
-        tmp_path = os.path.join(tempfile.gettempdir(), "_avlips_mel_tmp.png")
-        plt.imsave(tmp_path, mel)
-        mel_img = (plt.imread(tmp_path) * 255).astype(np.uint8)
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
+        # Convert mel map to a 3-channel image without matplotlib
+        mel_min = float(np.min(mel))
+        mel_max = float(np.max(mel))
+        denom = (mel_max - mel_min) if mel_max > mel_min else 1.0
+        mel_norm = (mel - mel_min) / denom
+        mel_u8 = np.clip(mel_norm * 255.0, 0, 255).astype(np.uint8)
 
-        return mel_img[:, :, :3]  # drop alpha if present
+        mel_color_bgr = cv2.applyColorMap(mel_u8, cv2.COLORMAP_VIRIDIS)
+        mel_color_rgb = cv2.cvtColor(mel_color_bgr, cv2.COLOR_BGR2RGB)
+        return mel_color_rgb
 
     except Exception as e:
         warnings.warn(f"Mel-spectrogram generation failed: {e}")
@@ -197,7 +199,7 @@ def build_composite_images(
     n_extract: int = N_EXTRACT,
     window_len: int = WINDOW_LEN,
     frame_size: int = FRAME_SIZE,
-) -> List[np.ndarray]:
+) -> Tuple[List[np.ndarray], bool]:
     """
     Build composite images (mel spectrogram + frame groups) from a video.
 
@@ -207,7 +209,8 @@ def build_composite_images(
 
     If audio extraction or mel-spectrogram generation fails, a blank
     (grey) spectrogram placeholder is used so that the visual pathway
-    still functions.
+    still functions, but the caller is informed via the ``has_audio``
+    flag so it can decide whether to trust the result.
 
     Parameters
     ----------
@@ -224,6 +227,8 @@ def build_composite_images(
     -------
     composites : list[np.ndarray]
         Each element is an (H, W, 3) uint8 composite image.
+    has_audio : bool
+        True if audio was extracted and a mel-spectrogram was generated.
     """
     # Only read the frames we actually need: n_extract windows of
     # window_len frames each.  In the worst case that's
@@ -241,7 +246,7 @@ def build_composite_images(
             f"Video too short ({len(frames)} frames). "
             f"Need at least {window_len + 1}."
         )
-        return []
+        return [], False
 
     # --- Sample starting indices (evenly spaced) ---
     max_start = len(frames) - window_len
@@ -264,10 +269,13 @@ def build_composite_images(
 
     # --- Extract audio & generate mel-spectrogram ---
     mel_img: Optional[np.ndarray] = None
+    has_audio = False
     with tempfile.TemporaryDirectory() as tmp_dir:
         wav_path = os.path.join(tmp_dir, "audio.wav")
         if extract_audio(video_path, wav_path):
             mel_img = generate_mel_spectrogram(wav_path)
+            if mel_img is not None:
+                has_audio = True
 
     composites: List[np.ndarray] = []
 
@@ -297,8 +305,7 @@ def build_composite_images(
             )
 
         # Stack vertically: mel on top, frames below → (1000, 2500, 3)
-        # Both mel (from matplotlib) and frames are now RGB — matching
-        # the original preprocess.py which saves RGB PNGs via plt.imsave.
+        # Both mel and frames are RGB here.
         composite_rgb = np.concatenate([sub_mel, frame_row], axis=0)
 
         # Simulate cv2.imread read-back: the original training pipeline
@@ -307,7 +314,7 @@ def build_composite_images(
         composite_bgr = cv2.cvtColor(composite_rgb, cv2.COLOR_RGB2BGR)
         composites.append(composite_bgr)
 
-    return composites
+    return composites, has_audio
 
 
 # ---------------------------------------------------------------------------
@@ -384,7 +391,7 @@ def preprocess_video(
     n_extract: int = N_EXTRACT,
     window_len: int = WINDOW_LEN,
     max_composites: Optional[int] = None,
-) -> Tuple[Optional[torch.Tensor], Optional[List[List[torch.Tensor]]]]:
+) -> Tuple[Optional[torch.Tensor], Optional[List[List[torch.Tensor]]], bool]:
     """
     End-to-end preprocessing: video file → batched tensors for LipFD.
 
@@ -395,12 +402,14 @@ def preprocess_video(
     crops : list[list[Tensor]] | None
         ``crops[scale][frame]`` where each tensor is (N, 3, 224, 224).
         Returns None if the video is too short or cannot be processed.
+    has_audio : bool
+        True if audio was successfully extracted from the video.
     """
-    composites = build_composite_images(
+    composites, has_audio = build_composite_images(
         video_path, n_extract=n_extract, window_len=window_len,
     )
     if not composites:
-        return None, None
+        return None, None, has_audio
 
     if max_composites and len(composites) > max_composites:
         composites = composites[:max_composites]
@@ -430,4 +439,4 @@ def preprocess_video(
     ]
     del crops_batched  # free intermediate lists
 
-    return full_imgs, crops_tensors
+    return full_imgs, crops_tensors, has_audio

@@ -60,6 +60,18 @@ references:
     year: 2024
     url: "https://github.com/HamzaKhan760/IvyFakeGenDetector"
   - type: article
+    title: "Exploring Self-Supervised Vision Transformers for Deepfake Detection: A Comparative Analysis"
+    authors:
+      - family-names: Nguyen
+        given-names: Huy H.
+      - family-names: Yamagishi
+        given-names: Junichi
+      - family-names: Echizen
+        given-names: Isao
+    year: 2024
+    journal: "arXiv preprint arXiv:2405.00355"
+    url: "https://arxiv.org/abs/2405.00355"
+  - type: article
     title: "Emerging Properties in Self-Supervised Vision Transformers"
     authors:
       - family-names: Caron

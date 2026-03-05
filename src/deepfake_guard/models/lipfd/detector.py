@@ -33,7 +33,11 @@ import numpy as np
 import torch
 
 from .model import LipFD, VALID_ARCH_NAMES, build_model
-from .preprocessing import preprocess_video
+from .preprocessing import (
+    has_ffmpeg_support,
+    has_librosa_support,
+    preprocess_video,
+)
 
 
 # Default CLIP architecture used by the pretrained LipFD checkpoint
@@ -160,9 +164,21 @@ class LipFDDetector:
                 "No pretrained weights loaded — predictions will be unreliable."
             )
 
+        if not has_librosa_support():
+            return self._error_result(
+                "Missing dependency: librosa. LipFD requires librosa for "
+                "audio preprocessing. Install with: pip install librosa"
+            )
+
+        if not has_ffmpeg_support():
+            return self._error_result(
+                "Missing dependency: ffmpeg not found on PATH. LipFD "
+                "requires ffmpeg to extract audio from video."
+            )
+
         # --- Preprocess ---
         try:
-            full_imgs, crops = preprocess_video(
+            full_imgs, crops, has_audio = preprocess_video(
                 video_path,
                 n_extract=self.n_extract,
                 max_composites=self.max_composites,
@@ -173,6 +189,13 @@ class LipFDDetector:
         if full_imgs is None or crops is None:
             return self._error_result(
                 "Video could not be preprocessed (too short or unreadable)."
+            )
+
+        if not has_audio:
+            return self._error_result(
+                "No usable audio track found in this video. LipFD requires "
+                "audio to detect lip-sync deepfakes — cannot produce a "
+                "reliable prediction."
             )
 
         num_samples = full_imgs.shape[0]

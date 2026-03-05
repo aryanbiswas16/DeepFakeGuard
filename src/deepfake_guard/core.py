@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import gc
+import math
 import os
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Literal
+from typing import Any, Callable, Dict, List, Optional, Literal
 
 import torch
 
@@ -212,24 +214,43 @@ class DeepfakeGuard:
 
         return result
 
-    # Per-detector trust priors: reflect how calibrated each score is.
-    # DINOv3 is fine-tuned on deepfakes  → high trust.
-    # D3 is training-free but principled  → medium trust.
+    # ─── Per-detector trust priors ───────────────────────────────────────
+    #
+    # Domain awareness:
+    #   DINOv3  – trained *strictly* on face-swap deepfakes (FaceForensics++,
+    #             Celeb-DF).  Strong on face manipulation artefacts, but may
+    #             false-positive on legitimate AI-generated video that wasn't
+    #             designed to impersonate someone.
+    #   D3      – training-free; measures second-order temporal volatility
+    #             (ICCV 2025).  Complementary to DINOv3: good at catching
+    #             AI-generated video, but can miss face-swap deepfakes that
+    #             preserve natural motion.
+    #   LipFD   – audio-visual lip-sync detector (NeurIPS 2024, 95.3% on
+    #             AVLips).  Unique modality—only detector that uses audio.
+    #             Trained on Wav2Lip / SadTalker / TalkLip / MakeItTalk.
+    #             Irrelevant for videos without speech or face.
+    #
     _DETECTOR_TRUST: Dict[str, float] = {
-        "dinov3":   1.0,
-        "lipfd":    0.85,             # NeurIPS 2024, trained on lip-sync deepfakes; 91.2% acc on FakeAVCeleb
-        "d3":       0.6,
+        "dinov3": 1.0,     # highest—trained, well-calibrated
+        "lipfd":  0.9,     # NeurIPS 2024, strong on its domain
+        "d3":     0.65,    # training-free, principled but noisier
     }
 
+    # Which *forgery families* each detector is an authority on.
+    _DETECTOR_DOMAIN: Dict[str, str] = {
+        "dinov3": "face-swap deepfake",
+        "lipfd":  "lip-sync deepfake",
+        "d3":     "AI-generated video",
+    }
+
+    # ─── Single-detector aggregation (unchanged API) ───────────────────
     def _aggregate_scores(self, modality_results: Dict[str, Dict[str, Any]]) -> float:
         """Confidence-weighted aggregate across modalities.
 
         Each score is weighted by:
           trust_prior(detector) × certainty(score)
 
-        where certainty = 2 * |score - 0.5|  (0 = completely uncertain, 1 = maximal).
-        This ensures that a highly confident trained detector dominates an uncertain
-        untrained one, and that scores close to 0.5 contribute little to the result.
+        where certainty = 2 * |score − 0.5|  (0 = uncertain, 1 = maximal).
         """
         weighted_sum = 0.0
         weight_total = 0.0
@@ -241,13 +262,342 @@ class DeepfakeGuard:
                 continue
             det_type = res.get("details", {}).get("detector_type", self.detector_type)
             trust = self._DETECTOR_TRUST.get(det_type, 0.5)
-            certainty = abs(float(score) - 0.5) * 2.0  # ∈ [0, 1]
-            weight = trust * (0.1 + 0.9 * certainty)   # floor at 10 % of trust so zero-certainty still votes
+            certainty = abs(float(score) - 0.5) * 2.0
+            weight = trust * (0.1 + 0.9 * certainty)
             weighted_sum += float(score) * weight
             weight_total += weight
         if weight_total == 0.0:
             return 0.0
         return float(weighted_sum / weight_total)
+
+    # ─── Ensemble detection (multi-detector) ───────────────────────────
+    @staticmethod
+    def ensemble_detect_video(
+        guards: Dict[str, "DeepfakeGuard"],
+        video_path: str,
+        threshold: float = 0.5,
+    ) -> Dict[str, Any]:
+        """Run all supplied detectors and produce a fused ensemble result.
+
+        This is the *proper* ensemble entry-point.  It:
+          1. Runs each detector sequentially (with memory cleanup between).
+          2. Applies domain-aware trust × certainty weighting.
+          3. Detects outlier detectors and down-weights them (veto logic).
+          4. Checks cross-modal agreement / disagreement.
+          5. Generates a natural-language explanation.
+
+        Args:
+            guards: ``{"dinov3": guard, "d3": guard, …}``
+            video_path: Path to the video file.
+            threshold: Score above this → FAKE.
+
+        Returns:
+            A rich result dict with ensemble verdict, per-detector
+            results, agreement analysis, and explanation.
+        """
+        if not os.path.exists(video_path):
+            return {"error": f"Video not found: {video_path}"}
+
+        # ── 1. Run each detector (with cleanup) ──────────────────────
+        per_detector: Dict[str, Dict[str, Any]] = {}
+        for name, guard in guards.items():
+            try:
+                per_detector[name] = guard.detect_video(video_path)
+            except Exception as exc:
+                per_detector[name] = {
+                    "overall_score": 0.5,
+                    "overall_label": "ERROR",
+                    "errors": [str(exc)],
+                }
+            # Free memory between detectors
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        # Collect per-detector scores & labels
+        scores: Dict[str, float] = {}
+        labels: Dict[str, str] = {}
+        for n, r in per_detector.items():
+            scores[n] = r.get("overall_score", 0.5)
+            labels[n] = r.get("overall_label", "UNKNOWN")
+
+        # ── 1b. Applicability gating ────────────────────────────────
+        applicability: Dict[str, Dict[str, Any]] = {}
+        for name, r in per_detector.items():
+            applicability[name] = DeepfakeGuard._assess_applicability(name, r)
+
+        # ── 2. Outlier veto ───────────────────────────────────────────
+        #  If exactly one detector is highly confident FAKE (>0.8) but
+        #  ALL others are confidently REAL (<0.35), the lone detector is
+        #  likely a domain mismatch (e.g. DINOv3 seeing "face artefacts"
+        #  in a legitimate AI video).  Down-weight it heavily.
+        outliers: Dict[str, bool] = {n: False for n in scores}
+        if len(scores) >= 3:
+            for candidate, cand_score in scores.items():
+                if cand_score <= 0.8:
+                    continue
+                others = {k: v for k, v in scores.items() if k != candidate}
+                others_strongly_real = all(s < 0.35 for s in others.values())
+                others_have_opinion = any(
+                    abs(s - 0.5) > 0.1 for s in others.values()
+                )
+                if others_strongly_real and others_have_opinion:
+                    outliers[candidate] = True
+
+        # ── 3. Domain-aware weighted fusion ───────────────────────────
+        trust_map = DeepfakeGuard._DETECTOR_TRUST
+        weighted_sum = 0.0
+        weight_total = 0.0
+        contributions: Dict[str, Dict[str, float]] = {}
+
+        for name, score in scores.items():
+            if labels[name] == "ERROR":
+                contributions[name] = {
+                    "score": score,
+                    "weight": 0.0,
+                    "outlier": False,
+                    "trust": trust_map.get(name, 0.5),
+                    "certainty": 0.0,
+                    "applicability_factor": 0.0,
+                    "applicability_level": "unavailable",
+                    "applicability_reason": applicability.get(name, {}).get("reason", "Detector failed"),
+                }
+                continue
+            trust = trust_map.get(name, 0.5)
+            certainty = abs(score - 0.5) * 2.0
+            weight = trust * (0.1 + 0.9 * certainty)
+
+            app_meta = applicability.get(name, {})
+            app_factor = float(app_meta.get("factor", 1.0))
+            weight *= app_factor
+
+            # Outlier penalty — multiply by 0.05 (95 % reduction)
+            if outliers.get(name, False):
+                weight *= 0.05
+
+            weighted_sum += score * weight
+            weight_total += weight
+            contributions[name] = {
+                "score": round(score, 4),
+                "weight": round(weight, 4),
+                "trust": trust,
+                "certainty": round(certainty, 4),
+                "outlier": outliers.get(name, False),
+                "applicability_factor": round(app_factor, 4),
+                "applicability_level": app_meta.get("level", "high"),
+                "applicability_reason": app_meta.get("reason", "Fully applicable"),
+            }
+
+        raw_score = weighted_sum / weight_total if weight_total > 0 else 0.5
+
+        # Gentle sigmoid sharpening (k=4): pushes scores away from 0.5
+        # but keeps them interpretable—nothing like the k=200 insanity.
+        k = 4.0
+        try:
+            ensemble_score = 1.0 / (1.0 + math.exp(-k * (raw_score - 0.5)))
+        except OverflowError:
+            ensemble_score = 0.0 if raw_score < 0.5 else 1.0
+
+        ensemble_label = "FAKE" if ensemble_score > threshold else "REAL"
+
+        # ── 4. Agreement analysis ─────────────────────────────────────
+        non_error = {n: l for n, l in labels.items() if l != "ERROR"}
+        unique_labels = set(non_error.values()) - {"UNKNOWN"}
+        if len(unique_labels) <= 1 and len(non_error) > 1:
+            agreement = "unanimous"
+        elif len(unique_labels) == 2:
+            fake_count = sum(1 for l in non_error.values() if l == "FAKE")
+            real_count = sum(1 for l in non_error.values() if l == "REAL")
+            if fake_count > real_count:
+                agreement = "majority-fake"
+            elif real_count > fake_count:
+                agreement = "majority-real"
+            else:
+                agreement = "split"
+        else:
+            agreement = "inconclusive"
+
+        # ── 5. Natural-language explanation ────────────────────────────
+        explanation = DeepfakeGuard._build_ensemble_explanation(
+            scores, labels, outliers, contributions, applicability,
+            ensemble_score, ensemble_label, agreement, threshold,
+        )
+
+        # ── 6. Assemble result ────────────────────────────────────────
+        all_errors = []
+        for r in per_detector.values():
+            all_errors.extend(r.get("errors", []))
+
+        return {
+            "overall_score": round(ensemble_score, 4),
+            "overall_label": ensemble_label,
+            "raw_score": round(raw_score, 4),
+            "threshold": threshold,
+            "agreement": agreement,
+            "explanation": explanation,
+            "detector_results": per_detector,
+            "contributions": contributions,
+            "applicability": applicability,
+            "scores": scores,
+            "labels": labels,
+            "outliers": outliers,
+            "errors": all_errors,
+            "model_info": {
+                "version": "0.5.0",
+                "mode": "ensemble",
+                "detectors": list(guards.keys()),
+                "fusion": "domain-aware trust × certainty × applicability with outlier veto",
+            },
+        }
+
+    @staticmethod
+    def _assess_applicability(detector_name: str, detector_result: Dict[str, Any]) -> Dict[str, Any]:
+        """Estimate whether a detector is applicable to this specific video."""
+        if detector_result.get("overall_label") == "ERROR":
+            err = "; ".join(detector_result.get("errors", []))
+            return {
+                "level": "unavailable",
+                "factor": 0.0,
+                "reason": err or "Detector failed for this video",
+            }
+
+        details = detector_result.get("modality_results", {}).get("visual", {}).get("details", {})
+
+        if detector_name == "lipfd":
+            av_details = detector_result.get("modality_results", {}).get("audio_visual", {}).get("details", {})
+            n_samples = av_details.get("num_samples")
+            if isinstance(n_samples, int):
+                if n_samples >= 8:
+                    return {"level": "high", "factor": 1.0, "reason": f"{n_samples} lip-sync samples analysed"}
+                if n_samples >= 4:
+                    return {"level": "medium", "factor": 0.75, "reason": f"Limited lip-sync samples ({n_samples})"}
+                return {"level": "low", "factor": 0.45, "reason": f"Very few lip-sync samples ({n_samples})"}
+            return {"level": "medium", "factor": 0.7, "reason": "Audio-visual samples available"}
+
+        if detector_name == "d3":
+            frame_count = details.get("frame_count")
+            volatility = details.get("volatility")
+            vol_threshold = details.get("threshold", 1.8)
+            if isinstance(frame_count, int) and frame_count < 8:
+                return {"level": "low", "factor": 0.5, "reason": f"Low frame count ({frame_count})"}
+            if isinstance(volatility, (int, float)) and isinstance(vol_threshold, (int, float)) and vol_threshold > 0:
+                motion_ratio = float(volatility) / float(vol_threshold)
+                if motion_ratio < 0.45:
+                    return {"level": "low", "factor": 0.45, "reason": "Very low temporal motion"}
+                if motion_ratio < 0.75:
+                    return {"level": "medium", "factor": 0.7, "reason": "Limited temporal motion"}
+            return {"level": "high", "factor": 1.0, "reason": "Sufficient temporal dynamics"}
+
+        if detector_name == "dinov3":
+            frame_count = details.get("frame_count")
+            if isinstance(frame_count, int):
+                if frame_count >= 8:
+                    return {"level": "high", "factor": 1.0, "reason": f"Faces found across {frame_count} frames"}
+                if frame_count >= 4:
+                    return {"level": "medium", "factor": 0.75, "reason": "Moderate face coverage"}
+                return {"level": "low", "factor": 0.5, "reason": "Sparse/uncertain face coverage"}
+            return {"level": "high", "factor": 1.0, "reason": "Face-based analysis available"}
+
+        return {"level": "high", "factor": 1.0, "reason": "Applicable"}
+
+    @staticmethod
+    def _build_ensemble_explanation(
+        scores: Dict[str, float],
+        labels: Dict[str, str],
+        outliers: Dict[str, bool],
+        contributions: Dict[str, Dict[str, float]],
+        applicability: Dict[str, Dict[str, Any]],
+        ensemble_score: float,
+        ensemble_label: str,
+        agreement: str,
+        threshold: float,
+    ) -> str:
+        """Generate a human-readable explanation of the ensemble verdict."""
+        domain = DeepfakeGuard._DETECTOR_DOMAIN
+        parts: List[str] = []
+
+        # Headline
+        certainty_pct = abs(ensemble_score - 0.5) * 200
+        parts.append(
+            f"The ensemble verdict is {ensemble_label} "
+            f"(score {ensemble_score:.1%}, certainty {certainty_pct:.0f}%)."
+        )
+
+        # Agreement summary
+        if agreement == "unanimous":
+            parts.append("All detectors agree on this verdict.")
+        elif agreement == "split":
+            parts.append(
+                "Detectors are evenly split — treat this result with caution."
+            )
+        elif agreement.startswith("majority"):
+            majority_side = agreement.split("-")[1].upper()
+            dissenters = [
+                n.upper() for n, l in labels.items()
+                if l != majority_side and l not in ("UNKNOWN", "ERROR")
+            ]
+            if dissenters:
+                parts.append(
+                    f"Majority says {majority_side}, "
+                    f"but {', '.join(dissenters)} dissent{'s' if len(dissenters) == 1 else ''}."
+                )
+
+        # Per-detector rationale
+        for name in sorted(scores.keys()):
+            s = scores[name]
+            lab = labels[name]
+            dom = domain.get(name, "unknown")
+            is_outlier = outliers.get(name, False)
+
+            if lab == "ERROR":
+                parts.append(f"{name.upper()} ({dom}): skipped — could not analyse this video.")
+                continue
+
+            direction = "fake" if s > 0.5 else "real"
+            strength = abs(s - 0.5) * 2.0
+            if strength > 0.7:
+                adverb = "strongly"
+            elif strength > 0.3:
+                adverb = "moderately"
+            else:
+                adverb = "weakly"
+
+            line = f"{name.upper()} ({dom}): {adverb} indicates {direction} ({s:.1%})."
+
+            if is_outlier:
+                line += (
+                    " This contradicts all other detectors and was "
+                    "down-weighted as a likely domain mismatch."
+                )
+
+            app_meta = applicability.get(name, {})
+            app_level = str(app_meta.get("level", "high"))
+            app_reason = str(app_meta.get("reason", ""))
+            if app_level in ("low", "medium"):
+                line += f" Applicability is {app_level}: {app_reason}."
+
+            # Domain-specific caveats
+            if name == "dinov3" and lab == "FAKE":
+                line += (
+                    " Note: DINOv3 was trained on face-swap deepfakes "
+                    "(not AI-generated video); a FAKE label here "
+                    "specifically indicates face manipulation artefacts."
+                )
+            elif name == "lipfd" and lab == "REAL":
+                line += (
+                    " LipFD only detects lip-sync forgeries; a REAL "
+                    "result does not rule out other manipulation types."
+                )
+            elif name == "d3" and lab == "FAKE":
+                line += (
+                    " D3 detects AI-generated content by motion "
+                    "volatility; this suggests the video has "
+                    "unnaturally smooth temporal dynamics."
+                )
+
+            parts.append(line)
+
+        return " ".join(parts)
 
     def _run_visual_analysis(self, video_path: str) -> Dict[str, Any]:
         """Run visual analysis based on current detector type."""
