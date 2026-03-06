@@ -193,6 +193,48 @@ if detector_type in ("lipfd", "all"):
 else:
     lipfd_weights_input = ""
 
+# VLM Explainability options (ensemble mode only)
+if detector_type == "all":
+    st.sidebar.divider()
+    st.sidebar.markdown("**🧠 VLM Explainability** *(FAKE verdicts only)*")
+    vlm_backend = st.sidebar.selectbox(
+        "VLM Backend",
+        options=["openai", "anthropic", "qwen2vl", "disabled"],
+        format_func=lambda x: {
+            "openai":    "☁️ GPT-4o mini (OpenAI API)",
+            "anthropic": "☁️ Claude Opus 4.6 (Anthropic API)",
+            "qwen2vl":   "🖥️ Qwen2-VL-7B (local — requires GPU)",
+            "disabled":  "🚫 Disabled",
+        }[x],
+        help="Provides a natural language explanation of why the video was flagged FAKE.",
+    )
+    vlm_api_key_input = ""
+    if vlm_backend == "openai":
+        import os as _os
+        vlm_api_key_input = st.sidebar.text_input(
+            "OpenAI API Key",
+            type="password",
+            placeholder="sk-...",
+            help="Get your key at platform.openai.com. Stored only in this session.",
+        ) or _os.environ.get("OPENAI_API_KEY", "")
+        if not vlm_api_key_input:
+            st.sidebar.caption("⚠️ No API key — VLM will be skipped.")
+    elif vlm_backend == "anthropic":
+        import os as _os
+        vlm_api_key_input = st.sidebar.text_input(
+            "Anthropic API Key",
+            type="password",
+            placeholder="sk-ant-...",
+            help="Get your key at console.anthropic.com. Stored only in this session.",
+        ) or _os.environ.get("ANTHROPIC_API_KEY", "")
+        if not vlm_api_key_input:
+            st.sidebar.caption("⚠️ No API key — VLM will be skipped.")
+    elif vlm_backend == "qwen2vl":
+        st.sidebar.caption("Requires CUDA GPU + PyTorch 2.4+ + ~15 GB download on first run.")
+else:
+    vlm_backend = "disabled"
+    vlm_api_key_input = ""
+
 # D3 options (shown for d3 or ensemble)
 if detector_type in ("d3", "all"):
     st.sidebar.divider()
@@ -346,6 +388,8 @@ if uploaded_file is not None:
 
                         ensemble = _DG.ensemble_detect_video(
                             guards, video_path, threshold=threshold,
+                            vlm_backend=vlm_backend,
+                            vlm_api_key=vlm_api_key_input or None,
                         )
 
                         ensemble_score = ensemble["overall_score"]
@@ -394,6 +438,47 @@ if uploaded_file is not None:
                             "LipFD needs visible lips + usable audio; D3 is strongest "
                             "when there is enough temporal movement."
                         )
+
+                        # ── VLM Semantic Explanation ─────────────────
+                        vlm_data = ensemble.get("vlm_explanation")
+                        if vlm_data and vlm_data.get("available"):
+                            st.markdown("### 🧠 Semantic Analysis (VLM)")
+
+                            if vlm_data.get("artifacts_found"):
+                                conf = vlm_data.get("confidence", "medium")
+                                conf_icons = {
+                                    "high": "🔴 High",
+                                    "medium": "🟡 Medium",
+                                    "low": "🟢 Low",
+                                }
+                                st.warning(
+                                    f"**Visual artifacts detected** "
+                                    f"(confidence: {conf_icons.get(conf, conf)})\n\n"
+                                    f"{vlm_data['explanation']}"
+                                )
+                                categories = vlm_data.get("artifact_categories", [])
+                                if categories:
+                                    st.caption(
+                                        "Artifact types: "
+                                        + ", ".join(
+                                            c.replace("_", " ").title()
+                                            for c in categories
+                                        )
+                                    )
+                                kf = vlm_data.get("key_frames", [])
+                                if kf:
+                                    st.caption(
+                                        "Key frames: " + ", ".join(str(f) for f in kf)
+                                    )
+                            else:
+                                st.success(
+                                    f"**No visual artifacts detected**\n\n"
+                                    f"{vlm_data.get('explanation', '')}"
+                                )
+
+                            st.caption(
+                                f"VLM backend: {vlm_data.get('backend', '?')}"
+                            )
 
                         # ── Detector comparison chart ───────────────
                         st.markdown("### 🔀 Detector Comparison")

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import gc
+import logging
 import math
 import os
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Literal
+
+logger = logging.getLogger(__name__)
 
 import torch
 
@@ -109,6 +112,7 @@ class DeepfakeGuard:
           3. Auto-download from GitHub Releases (~1.68 GB, first run only)
         """
         from .utils.weights import resolve_lipfd_weights
+        from .models.lipfd.detector import DEFAULT_ARCH
         resolved = resolve_lipfd_weights(weights_path)
         if resolved is None:
             import warnings
@@ -116,7 +120,12 @@ class DeepfakeGuard:
                 "LipFD weights not available — running without weights "
                 "(accuracy will be poor). See README for download instructions."
             )
-        self.lipfd_detector = LipFDDetector(weights_path=resolved, device=self.device)
+            # No weights available: use the smaller ViT-B/32 to save ~900 MB RAM.
+            # Accuracy is equally poor regardless of CLIP variant without weights.
+            arch = "CLIP:ViT-B/32"
+        else:
+            arch = DEFAULT_ARCH
+        self.lipfd_detector = LipFDDetector(weights_path=resolved, device=self.device, arch=arch)
         self.visual_weights_loaded = resolved is not None
 
     def set_detector(
@@ -276,6 +285,8 @@ class DeepfakeGuard:
         guards: Dict[str, "DeepfakeGuard"],
         video_path: str,
         threshold: float = 0.5,
+        vlm_backend: str = "openai",
+        vlm_api_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run all supplied detectors and produce a fused ensemble result.
 
@@ -423,6 +434,20 @@ class DeepfakeGuard:
             ensemble_score, ensemble_label, agreement, threshold,
         )
 
+        # ── 5b. VLM semantic explainability (FAKE only, post-hoc) ─────
+        vlm_explanation = None
+        if ensemble_label == "FAKE":
+            try:
+                from deepfake_guard.explainability import VLMExplainer
+                explainer = VLMExplainer(backend=vlm_backend, api_key=vlm_api_key)
+                vlm_explanation = explainer.explain(video_path, ensemble_score)
+            except Exception as exc:
+                logger.debug("VLM explainability unavailable: %s", exc)
+                vlm_explanation = {
+                    "available": False,
+                    "explanation": "VLM backend not configured",
+                }
+
         # ── 6. Assemble result ────────────────────────────────────────
         all_errors = []
         for r in per_detector.values():
@@ -435,6 +460,7 @@ class DeepfakeGuard:
             "threshold": threshold,
             "agreement": agreement,
             "explanation": explanation,
+            "vlm_explanation": vlm_explanation,
             "detector_results": per_detector,
             "contributions": contributions,
             "applicability": applicability,
