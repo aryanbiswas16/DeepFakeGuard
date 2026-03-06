@@ -87,14 +87,8 @@ class DeepfakeGuard:
             padding_ratio=0.3,
         )
 
-        resolved = None
-        if weights_path and os.path.exists(weights_path):
-            resolved = weights_path
-        elif self._BUNDLED_DINOV3_WEIGHTS.exists():
-            resolved = str(self._BUNDLED_DINOV3_WEIGHTS)
-        else:
-            import warnings
-            warnings.warn("No DINOv3 weights found — running with random initialisation.")
+        from .utils.weights import resolve_dinov3_weights
+        resolved = resolve_dinov3_weights(weights_path)
 
         if resolved:
             self.load_visual_weights(resolved)
@@ -436,7 +430,7 @@ class DeepfakeGuard:
 
         # ── 5b. VLM semantic explainability (FAKE only, post-hoc) ─────
         vlm_explanation = None
-        if ensemble_label == "FAKE":
+        if ensemble_label == "FAKE" and vlm_backend not in (None, "disabled", ""):
             try:
                 from deepfake_guard.explainability import VLMExplainer
                 explainer = VLMExplainer(backend=vlm_backend, api_key=vlm_api_key)

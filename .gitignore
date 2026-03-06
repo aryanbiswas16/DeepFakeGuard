@@ -114,7 +114,6 @@ celerybeat.pid
 *.sage.py
 
 # Model weights (large files — download separately)
-# Note: src/deepfake_guard/weights/dinov3_best_v3.pth is tracked intentionally (28 MB)
 src/deepfake_guard/weights/lipfd_ckpt.pth
 
 # Environments
@@ -149,4 +148,25 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+
+# Claude Code workspace settings
+.claude/
+
+# IDE settings
+.vscode/
+
+# Model weights (download from release assets)
+*.pth
+*.pt
+*.onnx
+*.bin
+src/deepfake_guard/weights/
+
+# Compiled LaTeX / PDF
+*.pdf
+
+# Local reference docs
+POSTER_TEXT.md
+PROJECT_CONTEXT.md
+VLM_IMPLEMENTATION_GUIDE.md
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deepfake_guard"
-version = "0.4.0"
+version = "0.5.0"
 description = "Multimodal Deepfake Detection Library with Multiple Detector Backends (DINOv3, D3, LipFD)"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -49,9 +49,21 @@ ui = [
     "streamlit>=1.25.0",
     "plotly>=5.15.0"
 ]
+vlm = [
+    "openai>=1.0.0",
+]
+vlm-anthropic = [
+    "anthropic>=0.18.0",
+]
+vlm-local = [
+    "qwen-vl-utils",
+    "accelerate>=0.25.0",
+]
 all = [
     "streamlit>=1.25.0",
-    "plotly>=5.15.0"
+    "plotly>=5.15.0",
+    "openai>=1.0.0",
+    "anthropic>=0.18.0",
 ]
 
 [project.urls]
@@ -61,9 +73,6 @@ Documentation = "https://github.com/aryanbiswas16/DeepFakeGuard#readme"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.setuptools.package-data]
-"deepfake_guard" = ["weights/*.pth"]
 
 [tool.black]
 line-length = 100
