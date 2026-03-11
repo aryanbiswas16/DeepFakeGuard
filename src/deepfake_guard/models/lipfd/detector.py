@@ -249,9 +249,28 @@ class LipFDDetector:
         ]
         fake_ratio = sum(1 for l in sample_labels if l == "FAKE") / len(sample_labels)
 
+        score_std = float(np.std(scores_arr))
+        score_min = float(np.min(scores_arr))
+        score_max = float(np.max(scores_arr))
+
+        # Applicability check: detect degenerate score patterns that indicate
+        # the video lacks classifiable lip-sync content (e.g. no visible lips,
+        # no meaningful audio, or AI-generated video without real face).
+        warnings: list[str] = []
+        applicable = True
+        if score_std < 0.001 and score_max < 0.01:
+            applicable = False
+            warnings.append(
+                "All samples produced near-zero identical scores. "
+                "LipFD may not be applicable to this video — no classifiable "
+                "lip-sync content was detected. The verdict should not be "
+                "treated as a confident REAL classification."
+            )
+
         return {
             "overall_label": overall_label,
             "overall_score": round(overall_score, 4),
+            "applicable": applicable,
             "model_info": {
                 "detector_type": self.DETECTOR_TYPE,
                 "architecture": self.arch,
@@ -268,12 +287,13 @@ class LipFDDetector:
                         "num_samples": num_samples,
                         "sample_scores": [round(s, 4) for s in all_scores],
                         "fake_ratio": round(fake_ratio, 4),
-                        "score_std": round(float(np.std(scores_arr)), 4),
-                        "score_min": round(float(np.min(scores_arr)), 4),
-                        "score_max": round(float(np.max(scores_arr)), 4),
+                        "score_std": round(score_std, 4),
+                        "score_min": round(score_min, 4),
+                        "score_max": round(score_max, 4),
                     },
                 }
             },
+            "warnings": warnings,
             "errors": errors,
         }
 

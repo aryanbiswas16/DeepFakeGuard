@@ -2,13 +2,13 @@ cff-version: 1.2.0
 message: "If you use this software, please cite both the software and the underlying methods."
 type: software
 title: "DeepFakeGuard: Multimodal Deepfake Detection Library"
-version: 0.4.0
-date-released: 2026-02-20
+version: 0.5.0
+date-released: 2026-03-07
 authors:
   - family-names: Biswas
     given-names: Aryan
     email: aryanbiswas16@gmail.com
-repository-code: "https://github.com/aryanbiswas16/DeepfakeVidDetection"
+repository-code: "https://github.com/aryanbiswas16/DeepFakeGuard"
 license: MIT
 keywords:
   - deepfake detection
@@ -24,7 +24,7 @@ preferred-citation:
     - family-names: Biswas
       given-names: Aryan
   year: 2026
-  url: "https://github.com/aryanbiswas16/DeepfakeVidDetection"
+  url: "https://github.com/aryanbiswas16/DeepFakeGuard"
 references:
   - type: article
     title: "D3: Training-Free AI-Generated Video Detection Using Second-Order Features"

@@ -15,5 +15,7 @@ packaging
 # CLIP (required by LipFD detector)
 # pip install git+https://github.com/openai/CLIP.git
 
+python-dotenv>=1.0.0
+
 # Optional demo extras (recommended via pyproject):
 # pip install -e ".[ui]"
