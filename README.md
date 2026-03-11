@@ -1,8 +1,10 @@
 # DeepFakeGuard
 
 A multi-detector deepfake detection Python library with ensemble fusion, optional VLM-powered explainability, and a Streamlit demo for live walkthroughs.
+<img width="1920" height="1031" alt="deepfakeguard" src="https://github.com/user-attachments/assets/91310d91-8be8-47ce-9479-64d33ff32eef" />
 
 ## Features
+
 
 - **Three complementary detectors** - DINOv3 (face-swap), D3 (temporal consistency), LipFD (lip-sync)
 - **Ensemble fusion** - domain-aware trust x certainty weighting with outlier veto
