@@ -60,7 +60,7 @@ guards = {
     "lipfd":  DeepfakeGuard(detector_type="lipfd"),
 }
 result = DeepfakeGuard.ensemble_detect_video(guards, "video.mp4")
-print(result["ensemble_label"], result["ensemble_score"])
+print(result["overall_label"], result["overall_score"])
 
 # Ensemble + VLM explanation
 result = DeepfakeGuard.ensemble_detect_video(
