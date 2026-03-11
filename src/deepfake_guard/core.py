@@ -187,7 +187,7 @@ class DeepfakeGuard:
         """Run the full detection pipeline on a video file."""
         result: Dict[str, Any] = {
             "model_info": {
-                "version": "0.4.0",
+                "version": "0.5.0",
                 "detector_type": self.detector_type,
                 **self._model_info
             },
@@ -423,24 +423,58 @@ class DeepfakeGuard:
             agreement = "inconclusive"
 
         # ── 5. Natural-language explanation ────────────────────────────
-        explanation = DeepfakeGuard._build_ensemble_explanation(
+        fallback_explanation = DeepfakeGuard._build_ensemble_explanation(
             scores, labels, outliers, contributions, applicability,
             ensemble_score, ensemble_label, agreement, threshold,
         )
 
-        # ── 5b. VLM semantic explainability (FAKE only, post-hoc) ─────
+        # ── 5b. VLM semantic explainability (primary) ──────────────
         vlm_explanation = None
-        if ensemble_label == "FAKE" and vlm_backend not in (None, "disabled", ""):
+        if vlm_backend not in (None, "disabled", ""):
+            # Build per-detector context for the VLM prompt
+            _DETECTOR_DOMAINS = {
+                "dinov3": "face-based deepfake detection; works well on general videos with visible faces",
+                "lipfd": "lip-sync deepfake detection; requires visible lips AND audio to function properly",
+                "d3": "temporal motion-volatility analysis; works best on videos with significant motion",
+            }
+            context_lines = []
+            for dname in sorted(scores.keys()):
+                domain = _DETECTOR_DOMAINS.get(dname, "unknown domain")
+                dscore = scores[dname]
+                dlabel = labels[dname]
+                app = applicability.get(dname, {})
+                app_level = app.get("level", "unknown")
+                app_reason = app.get("reason", "")
+                is_outlier = outliers.get(dname, False)
+                line = (
+                    f"- {dname.upper()} ({domain}): "
+                    f"score={dscore:.1%}, verdict={dlabel}, "
+                    f"applicability={app_level.upper()}"
+                )
+                if app_reason:
+                    line += f" ({app_reason})"
+                if is_outlier:
+                    line += " [OUTLIER — down-weighted]"
+                context_lines.append(line)
+            detector_context = "\n".join(context_lines)
+
             try:
                 from deepfake_guard.explainability import VLMExplainer
                 explainer = VLMExplainer(backend=vlm_backend, api_key=vlm_api_key)
-                vlm_explanation = explainer.explain(video_path, ensemble_score)
+                vlm_explanation = explainer.explain(
+                    video_path, ensemble_score,
+                    ensemble_label=ensemble_label,
+                    detector_context=detector_context,
+                )
             except Exception as exc:
                 logger.debug("VLM explainability unavailable: %s", exc)
-                vlm_explanation = {
-                    "available": False,
-                    "explanation": "VLM backend not configured",
-                }
+                vlm_explanation = None
+
+        # VLM is the primary explanation; rule-based is the fallback
+        if vlm_explanation and vlm_explanation.get("available"):
+            explanation = vlm_explanation["explanation"]
+        else:
+            explanation = fallback_explanation
 
         # ── 6. Assemble result ────────────────────────────────────────
         all_errors = []
@@ -485,6 +519,26 @@ class DeepfakeGuard:
 
         if detector_name == "lipfd":
             av_details = detector_result.get("modality_results", {}).get("audio_visual", {}).get("details", {})
+
+            # Check for degenerate score pattern (detector flagged non-applicability)
+            if detector_result.get("applicable") is False:
+                return {
+                    "level": "low",
+                    "factor": 0.15,
+                    "reason": "No classifiable lip-sync content detected — scores are uniformly near zero",
+                }
+
+            # Score-pattern heuristic: near-zero variance + all scores near zero
+            score_std = av_details.get("score_std")
+            score_max = av_details.get("score_max")
+            if isinstance(score_std, (int, float)) and isinstance(score_max, (int, float)):
+                if score_std < 0.001 and score_max < 0.01:
+                    return {
+                        "level": "low",
+                        "factor": 0.15,
+                        "reason": "No classifiable lip-sync content detected — scores are uniformly near zero",
+                    }
+
             n_samples = av_details.get("num_samples")
             if isinstance(n_samples, int):
                 if n_samples >= 8:

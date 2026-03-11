@@ -8,6 +8,10 @@ from pathlib import Path
 import tempfile
 import os
 
+# Load .env file (if present) so API keys are available as env vars
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
 
 # ── Chart helpers ────────────────────────────────────────────────────────────
 
@@ -196,7 +200,7 @@ else:
 # VLM Explainability options (ensemble mode only)
 if detector_type == "all":
     st.sidebar.divider()
-    st.sidebar.markdown("**🧠 VLM Explainability** *(FAKE verdicts only)*")
+    st.sidebar.markdown("**🧠 VLM Explainability**")
     vlm_backend = st.sidebar.selectbox(
         "VLM Backend",
         options=["openai", "anthropic", "qwen2vl", "disabled"],
@@ -206,7 +210,7 @@ if detector_type == "all":
             "qwen2vl":   "🖥️ Qwen2-VL-7B (local — requires GPU)",
             "disabled":  "🚫 Disabled",
         }[x],
-        help="Provides a natural language explanation of why the video was flagged FAKE.",
+        help="Provides a natural language forensic analysis of the video.",
     )
     vlm_api_key_input = ""
     if vlm_backend == "openai":
@@ -430,20 +434,11 @@ if uploaded_file is not None:
                             }
                             st.metric("Agreement", _agree_icons.get(agreement, agreement))
 
-                        # ── Natural-language explanation ─────────────
+                        # ── Explanation ──────────────────────────────
                         st.markdown("### 💬 Explanation")
-                        st.info(explanation)
-                        st.caption(
-                            "Applicability notes: DINOv3 works best with clear faces; "
-                            "LipFD needs visible lips + usable audio; D3 is strongest "
-                            "when there is enough temporal movement."
-                        )
-
-                        # ── VLM Semantic Explanation ─────────────────
                         vlm_data = ensemble.get("vlm_explanation")
                         if vlm_data and vlm_data.get("available"):
-                            st.markdown("### 🧠 Semantic Analysis (VLM)")
-
+                            # VLM-powered explanation
                             if vlm_data.get("artifacts_found"):
                                 conf = vlm_data.get("confidence", "medium")
                                 conf_icons = {
@@ -454,7 +449,7 @@ if uploaded_file is not None:
                                 st.warning(
                                     f"**Visual artifacts detected** "
                                     f"(confidence: {conf_icons.get(conf, conf)})\n\n"
-                                    f"{vlm_data['explanation']}"
+                                    f"{explanation}"
                                 )
                                 categories = vlm_data.get("artifact_categories", [])
                                 if categories:
@@ -473,11 +468,16 @@ if uploaded_file is not None:
                             else:
                                 st.success(
                                     f"**No visual artifacts detected**\n\n"
-                                    f"{vlm_data.get('explanation', '')}"
+                                    f"{explanation}"
                                 )
-
+                            st.caption(f"VLM backend: {vlm_data.get('backend', '?')}")
+                        else:
+                            # Rule-based fallback
+                            st.info(explanation)
                             st.caption(
-                                f"VLM backend: {vlm_data.get('backend', '?')}"
+                                "Applicability notes: DINOv3 works best with clear faces; "
+                                "LipFD needs visible lips + usable audio; D3 is strongest "
+                                "when there is enough temporal movement."
                             )
 
                         # ── Detector comparison chart ───────────────
@@ -589,6 +589,17 @@ if uploaded_file is not None:
                             st.success("## ✅ REAL VIDEO")
                         else:
                             st.warning("## ⚠️ UNKNOWN")
+
+                        # Show applicability warnings (e.g. LipFD on non-applicable video)
+                        result_warnings = result.get("warnings", [])
+                        if result.get("applicable") is False or result_warnings:
+                            for w in result_warnings:
+                                st.warning(f"⚠️ **Applicability Warning:** {w}")
+                            if result.get("applicable") is False and not result_warnings:
+                                st.warning(
+                                    "⚠️ **Applicability Warning:** This detector may not be applicable "
+                                    "to the input video. The verdict should be interpreted with caution."
+                                )
 
                         cols = st.columns(3)
                         with cols[0]:

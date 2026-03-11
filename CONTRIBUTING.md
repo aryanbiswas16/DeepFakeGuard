@@ -8,9 +8,8 @@ Thank you for your interest in contributing to DeepFakeGuard! This document prov
 
 1. **Clone the repository:**
 ```bash
-git clone https://github.com/aryanbiswas16/DeepfakeVidDetection.git
-cd DeepfakeVidDetection
-git checkout v0.4.0-multi-detector
+git clone https://github.com/aryanbiswas16/DeepFakeGuard.git
+cd deepfake-guard
 ```
 
 2. **Create a virtual environment:**
@@ -21,7 +20,7 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 3. **Install in development mode:**
 ```bash
-pip install -e ".[dev,ui,api]"
+pip install -e ".[dev,ui]"
 ```
 
 4. **Run tests:**

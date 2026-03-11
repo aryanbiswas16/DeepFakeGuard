@@ -48,23 +48,27 @@ pip install -e ".[all]"
 ```python
 from deepfake_guard import DeepfakeGuard
 
-guard = DeepfakeGuard()
-
-# Single detector
-result = guard.detect_video("video.mp4", backend="dinov3")
-print(result.label, result.confidence)
+# Single detector (choose "dinov3", "d3", or "lipfd")
+guard = DeepfakeGuard(detector_type="dinov3")
+result = guard.detect_video("video.mp4")
+print(result["overall_label"], result["overall_score"])
 
 # Ensemble (all detectors)
-result = guard.ensemble_detect_video("video.mp4")
-print(result.ensemble_label, result.ensemble_confidence)
+guards = {
+    "dinov3": DeepfakeGuard(detector_type="dinov3"),
+    "d3":     DeepfakeGuard(detector_type="d3"),
+    "lipfd":  DeepfakeGuard(detector_type="lipfd"),
+}
+result = DeepfakeGuard.ensemble_detect_video(guards, "video.mp4")
+print(result["overall_label"], result["overall_score"])
 
 # Ensemble + VLM explanation
-result = guard.ensemble_detect_video(
-    "video.mp4",
+result = DeepfakeGuard.ensemble_detect_video(
+    guards, "video.mp4",
     vlm_backend="openai",
     vlm_api_key="sk-..."
 )
-print(result.vlm_explanation.explanation)
+print(result["vlm_explanation"]["explanation"])
 ```
 
 ### Streamlit demo

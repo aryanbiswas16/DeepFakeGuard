@@ -1,8 +1,8 @@
 """VLM-based semantic explainability for DeepfakeGuard.
 
-This module provides post-hoc natural language explanations of why a video
-was flagged as FAKE.  It activates only when the ensemble verdict is FAKE and
-has zero impact on detection scores.
+This module provides post-hoc natural language explanations for the ensemble
+verdict.  It runs after all detection scores have been finalized and has zero
+impact on detection scores.
 
 Supported backends
 ------------------
@@ -140,13 +140,17 @@ class VLMExplainer:
         video_path: str,
         ensemble_score: float,
         num_frames: int = 6,
+        ensemble_label: str = "FAKE",
+        detector_context: str = "",
     ) -> Dict[str, Any]:
-        """Produce a semantic explanation for a FAKE verdict.
+        """Produce a semantic explanation for the ensemble verdict.
 
         Args:
             video_path: Path to the video file (used to extract frames).
             ensemble_score: The ensemble fake-probability score (0–1).
             num_frames: How many frames to sample for the grid.
+            ensemble_label: The ensemble verdict string.
+            detector_context: Pre-formatted per-detector summary for the prompt.
 
         Returns:
             A plain dict matching the :class:`VLMExplanation` schema.
@@ -174,18 +178,18 @@ class VLMExplainer:
         try:
             if self.backend == "openai":
                 raw_output = self._run_openai_inference(
-                    grid_image, ensemble_score, len(frames)
+                    grid_image, ensemble_score, len(frames), ensemble_label, detector_context
                 )
             elif self.backend == "anthropic":
                 raw_output = self._run_anthropic_inference(
-                    grid_image, ensemble_score, len(frames)
+                    grid_image, ensemble_score, len(frames), ensemble_label, detector_context
                 )
             else:  # qwen2vl
                 load_err = self._load_qwen_model()
                 if load_err:
                     return _unavailable(load_err, self.backend)
                 raw_output = self._run_qwen_inference(
-                    grid_image, ensemble_score, len(frames)
+                    grid_image, ensemble_score, len(frames), ensemble_label, detector_context
                 )
         except Exception as exc:
             logger.debug("VLM: inference failed: %s", exc)
@@ -203,6 +207,8 @@ class VLMExplainer:
         grid_image,  # PIL.Image
         ensemble_score: float,
         num_frames: int,
+        ensemble_label: str = "FAKE",
+        detector_context: str = "",
     ) -> str:
         """Call the OpenAI Chat Completions API with the grid image and return raw text."""
         try:
@@ -223,7 +229,8 @@ class VLMExplainer:
         user_text = USER_PROMPT_TEMPLATE.format(
             num_frames=num_frames,
             ensemble_score=ensemble_score,
-            verdict="FAKE",
+            verdict=ensemble_label,
+            detector_context=detector_context or "No per-detector data available.",
         )
 
         image_b64 = grid_to_base64(grid_image, fmt="JPEG")
@@ -262,6 +269,8 @@ class VLMExplainer:
         grid_image,  # PIL.Image
         ensemble_score: float,
         num_frames: int,
+        ensemble_label: str = "FAKE",
+        detector_context: str = "",
     ) -> str:
         """Call the Anthropic Messages API with the grid image and return raw text."""
         try:
@@ -283,7 +292,8 @@ class VLMExplainer:
         user_text = USER_PROMPT_TEMPLATE.format(
             num_frames=num_frames,
             ensemble_score=ensemble_score,
-            verdict="FAKE",
+            verdict=ensemble_label,
+            detector_context=detector_context or "No per-detector data available.",
         )
 
         image_b64 = grid_to_base64(grid_image, fmt="JPEG")
@@ -354,6 +364,8 @@ class VLMExplainer:
         grid_image,  # PIL.Image
         ensemble_score: float,
         num_frames: int,
+        ensemble_label: str = "FAKE",
+        detector_context: str = "",
     ) -> str:
         """Run a single forward pass through Qwen2-VL and return raw text."""
         try:
@@ -370,7 +382,8 @@ class VLMExplainer:
         user_text = USER_PROMPT_TEMPLATE.format(
             num_frames=num_frames,
             ensemble_score=ensemble_score,
-            verdict="FAKE",
+            verdict=ensemble_label,
+            detector_context=detector_context or "No per-detector data available.",
         )
 
         messages = [
